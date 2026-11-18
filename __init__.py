@@ -141,6 +141,9 @@ class NomadPreferences(bpy.types.AddonPreferences):
         name="Brush browser cell size", default=5.0, min=3.0, max=10.0,
         description="Size of the thumbnails of the brush browser and the "
                     "favorites popup")
+    custom_scale: bpy.props.FloatProperty(
+        name="Android / Tablet UI Scale", default=1.0, min=0.5, max=2.0,
+        description="Additional scale factor for elements drawn on screen")
 
     def draw(self, context):
         from . import requirements
@@ -177,6 +180,9 @@ class NomadPreferences(bpy.types.AddonPreferences):
                 row.label(text="(not installed)")
         box.label(text="Without them, the related features are disabled "
                        "or hidden.")
+        box = l.box()
+        box.label(text="Scaling and Display")
+        box.prop(self, "custom_scale")
 
 
 CLASSES = (NomadPreferences, NOMAD_OT_stub, NOMAD_OT_toggle_overlays,

@@ -256,6 +256,18 @@ def _hook_buttons(add):
             print(f"NomadUI editors: hook {name}: {exc!r}")
 
 
+def ensure_file_browser_header():
+    try:
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == 'FILE_BROWSER':
+                    for space in area.spaces:
+                        if space.type == 'FILE_BROWSER':
+                            space.show_header = True
+    except Exception:
+        pass
+
+
 def register():
     for cls in CLASSES:
         bpy.utils.register_class(cls)

@@ -15,11 +15,11 @@ COL_TL_CTRL = (0.07, 0.07, 0.08, 1.0)
 COL_FIELD = (0.16, 0.16, 0.18, 1.0)
 COL_BTN_IDLE = (0.16, 0.16, 0.18, 1.0)
 COL_ARROW_OFF = (0.4, 0.4, 0.44, 1.0)
-RADIUS = 10
+RADIUS = 8
 GROUP_SIZE = 4
-STEP = 48            # side-bar button pitch (BTN + PAD)
-ARROW_H = 26
-EDGE = 10            # clearance between the bars and the rest of the UI
+STEP = 40         # side-bar button pitch (BTN + PAD)
+ARROW_H = 24
+EDGE = 6            # clearance between the bars and the rest of the UI
 
 _bar = {"L": 0, "R": 0}      # scroll of each side column, in steps
 _info = {}                    # side -> geometry of an overflowing column
@@ -342,7 +342,7 @@ def draw_groups(context, w, h):
         pass
     group += [tuple(b[:4]) for b in direction]
     if group:
-        pill(*_bbox(group, 4))
+        pill(*_bbox(group, 1))
 
     # the rest of each column, in groups of GROUP_SIZE
     btns = [tuple(b[:4]) for b in side if b not in direction]
@@ -356,7 +356,7 @@ def draw_groups(context, w, h):
     for col in cols.values():
         col.sort(key=lambda r: -r[3])                  # top to bottom
         for i in range(0, len(col), GROUP_SIZE):
-            pill(*_bbox(col[i:i + GROUP_SIZE], 2))
+            pill(*_bbox(col[i:i + GROUP_SIZE], 1))
 
     # scroll arrows of the overflowing columns
     mx, my = panels.mouse
@@ -375,7 +375,7 @@ def draw_groups(context, w, h):
         try:
             from . import nav_gizmo
             for rects in nav_gizmo.groups(context, w, h):
-                pill(*_bbox(rects, 3))
+                pill(*_bbox(rects, 1))
         except Exception:
             pass
 
@@ -557,3 +557,13 @@ def _wrap_icons(fn, kind):
         return res
     wrapped._nomad_icons = True
     return wrapped
+
+def ui_scale():
+    """Preferences > Interface > Resolution Scale * Custom Tablet Scale."""
+    try:
+        base = max(0.5, float(bpy.context.preferences.view.ui_scale))
+        addon_prefs = bpy.context.preferences.addons[__package__].preferences
+        custom = getattr(addon_prefs, "custom_scale", 1.0)
+        return base * custom
+    except Exception:
+        return 1.0

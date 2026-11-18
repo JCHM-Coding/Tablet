@@ -5,8 +5,8 @@ from .sculpt_popups import open_panel_deferred, defer_op
 
 # --- Estilo -------------------------------------------------------------
 BTN = 40            # antes 36 — ancho común de botones y sliders
-PAD = 8
-MARGIN = 8
+PAD = 4
+MARGIN = 4
 TOP_GAP = 14
 SLIDER_H = 110
 SLIDER_GAP = 16
