@@ -61,6 +61,30 @@ def _fcurves(obj):
     return out
 
 
+def bone_selected(obj, name):
+    """Blender 5.0 moved the bone selection from Bone to PoseBone."""
+    pb = obj.pose.bones.get(name) if obj.pose is not None else None
+    if pb is not None:
+        try:
+            return bool(pb.select)
+        except AttributeError:
+            pass
+    return bool(obj.data.bones[name].select)
+
+
+def set_bone_selected(obj, name, state):
+    pb = obj.pose.bones.get(name) if obj.pose is not None else None
+    if pb is not None:
+        try:
+            pb.select = state
+            return
+        except AttributeError:
+            pass
+    b = obj.data.bones.get(name)
+    if b is not None:
+        b.select = state
+
+
 def _bone_ok(obj, fc):
     prefix = 'pose.bones["'
     dp = fc.data_path
@@ -68,7 +92,7 @@ def _bone_ok(obj, fc):
         return True
     name = dp[len(prefix):].split('"]', 1)[0]
     try:
-        return bool(obj.data.bones[name].select)
+        return bone_selected(obj, name)
     except (KeyError, AttributeError):
         return True
 

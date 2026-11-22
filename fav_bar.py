@@ -12,6 +12,11 @@ ICON = 44
 GAP = 6
 PAD = 8
 THICK = ICON + 2 * PAD
+LABEL_H = 14                 # name line under the thumbnail (asset browser tile)
+TILE = 56                    # square thumbnail when names are shown
+COL_ROW = (0.13, 0.13, 0.15, 1.0)     # same colors as the asset browser tiles
+COL_SEL = (0.22, 0.48, 0.85, 0.55)
+COL_TXT = (0.9, 0.9, 0.92, 1.0)
 SIDE_MARGIN = 200            # free space kept at each end of a horizontal strip
 
 _tex = {}               # (type, rel) -> GPUTexture
@@ -22,6 +27,26 @@ _st = {"last": (0, 0), "moved": 0.0, "press": None}
 
 def _side(context):
     return getattr(context.scene, "nomad_fav_side", 'BOTTOM')
+
+
+def _names(context):
+    """Same switch as the brush browser: show the names."""
+    return bool(getattr(context.window_manager, "nomad_shelf_names", False))
+
+
+def _item(context):
+    """(width, height) of one favorite, with or without its name."""
+    return (TILE, TILE + LABEL_H) if _names(context) else (ICON, ICON)
+
+
+def _thick(context):
+    iw, ih = _item(context)
+    return (ih if _side(context) in ('TOP', 'BOTTOM') else iw) + 2 * PAD
+
+
+def _fit(name, width, size=10):
+    n = max(3, int(width / (size * 0.56)))
+    return name if len(name) <= n else name[:n - 1] + "\u2026"
 
 
 def _entries(context):
@@ -45,42 +70,45 @@ def bottom_offset(context):
     """Height taken at the very bottom by the strip (Undo/Redo goes above)."""
     if _side(context) != 'BOTTOM' or _entries(context) is None:
         return 0
-    return THICK + 8
+    return _thick(context) + 8
 
 
 def right_offset(context):
     """Width taken at the right edge (picker and gizmo move left of it)."""
     if _side(context) != 'RIGHT' or _entries(context) is None:
         return 0
-    return THICK + 12
+    return _thick(context) + 12
 
 
 def left_offset(context):
     """Width taken at the far left; the toolbars move right of it."""
     if _side(context) != 'LEFT' or _entries(context) is None:
         return 0
-    return THICK + 8
+    return _thick(context) + 8
 
 
 def top_offset(context):
     """Height taken under the top bar (info text and panels move down)."""
     if _side(context) != 'TOP' or _entries(context) is None:
         return 0
-    return THICK + 8
+    return _thick(context) + 8
 
 
 
 def _panel(context, w, h, n):
     """((x1, y1, x2, y2), vertical)"""
     side = _side(context)
-    inner = max(n, 1) * (ICON + GAP) - GAP + 2 * PAD
+    iw, ih = _item(context)
+    t = _thick(context)
     if side in ('TOP', 'BOTTOM'):
+        inner = max(n, 1) * (iw + GAP) - GAP + 2 * PAD
         length = min(inner, w - 2 * SIDE_MARGIN)
         x1 = (w - length) / 2
         y1 = (_tl_base(context) if side == 'BOTTOM'
-              else h - top_bar.BAR_H - 8 - THICK)
-        return (x1, y1, x1 + length, y1 + THICK), False
+              else h - top_bar.BAR_H - 8 - t)
+        return (x1, y1, x1 + length, y1 + t), False
 
+    inner = max(n, 1) * (ih + GAP) - GAP + 2 * PAD
     lo = _tl_base(context) + panels.BOT_H + 8
     hi = h - top_bar.BAR_H - 8
     length = min(inner, hi - lo)
@@ -92,8 +120,8 @@ def _panel(context, w, h, n):
         left = getattr(context.scene, "nomad_sidebar_left", False)
         x2 = w - (panels.MARGIN + 6 if left
                   else panels.MARGIN + 4 + panels.BTN + 14)
-        x1 = x2 - THICK
-    return (x1, y1, x1 + THICK, y2), True
+        x1 = x2 - t
+    return (x1, y1, x1 + t, y2), True
 
 
 def _texture(e):
@@ -133,22 +161,29 @@ def _draw_tex(tex, x1, y1, x2, y2):
     batch.draw(shader)
 
 
-def _slots(ents, rect, vertical):
+def _slots(ents, rect, vertical, item=(ICON, ICON)):
+    """[(index, entry, box, icon)]: the box holds the icon and, with names,
+    the label under it."""
     x1, y1, x2, y2 = rect
+    iw, ih = item
     out = []
     for i, e in enumerate(ents):
-        off = PAD + i * (ICON + GAP)
         if vertical:
-            top = y2 - off + _scroll
-            r = (x1 + PAD, top - ICON, x1 + PAD + ICON, top)
-            if r[1] < y1 + PAD - 0.5 or r[3] > y2 - PAD + 0.5:
+            top = y2 - (PAD + i * (ih + GAP)) + _scroll
+            box = (x1 + PAD, top - ih, x1 + PAD + iw, top)
+            if box[1] < y1 + PAD - 0.5 or box[3] > y2 - PAD + 0.5:
                 continue
         else:
-            left = x1 + off - _scroll
-            r = (left, y1 + PAD, left + ICON, y1 + PAD + ICON)
-            if r[0] < x1 + PAD - 0.5 or r[2] > x2 - PAD + 0.5:
+            left = x1 + PAD + i * (iw + GAP) - _scroll
+            box = (left, y1 + PAD, left + iw, y1 + PAD + ih)
+            if box[0] < x1 + PAD - 0.5 or box[2] > x2 - PAD + 0.5:
                 continue
-        out.append((i, e, r))
+        if ih > iw:                    # with name: thumbnail fills the tile
+            icon = (box[0], box[3] - iw, box[2], box[3])
+        else:
+            cx = (box[0] + box[2]) / 2
+            icon = (cx - ICON / 2, box[3] - ICON, cx + ICON / 2, box[3])
+        out.append((i, e, box, icon))
     return out
 
 
@@ -161,25 +196,36 @@ def draw(context, w, h, mx, my):
     x1, y1, x2, y2 = rect
     style.pill(x1, y1, x2, y2, style.COL_PILL_DARK)
     if not ents:
-        drawing.glyph((x1 + x2) / 2, (y1 + y2) / 2, "★", 18, panels.COL_TIP)
+        drawing.glyph((x1 + x2) / 2, (y1 + y2) / 2, "\u2605", 18, panels.COL_TIP)
         return
 
+    item = _item(context)
+    pitch = (item[1] if vertical else item[0]) + GAP
     view = (y2 - y1 if vertical else x2 - x1) - 2 * PAD
-    total = len(ents) * (ICON + GAP) - GAP
+    total = len(ents) * pitch - GAP
     _scroll = max(0.0, min(_scroll, total - view))
+    names = _names(context)
     ak = brush_shelf._active_key(context)
-    for i, e, r in _slots(ents, rect, vertical):
+    for i, e, box, r in _slots(ents, rect, vertical, item):
         on = ak == (e["name"], e["fnorm"])
-        inside = r[0] <= mx <= r[2] and r[1] <= my <= r[3]
-        drawing.rrect(r[0] - 2, r[1] - 2, r[2] + 2, r[3] + 2, 9,
-                      panels.COL_HOVER if inside
-                      else panels.FILL_COL if on else style.COL_PILL)
+        inside = box[0] <= mx <= box[2] and box[1] <= my <= box[3]
+        if names:                      # like a pose library / asset tile
+            drawing.rect(box[0] - 2, box[1] - 2, box[2] + 2, box[3] + 2,
+                         COL_SEL if on else COL_ROW)
+        else:
+            drawing.rrect(r[0] - 2, r[1] - 2, r[2] + 2, r[3] + 2, 9,
+                          panels.COL_HOVER if inside
+                          else panels.FILL_COL if on else style.COL_PILL)
         tex = _texture(e)
         if tex is not None:
             _draw_tex(tex, r[0], r[1], r[2], r[3])
         else:
             drawing.glyph((r[0] + r[2]) / 2, (r[1] + r[3]) / 2,
                           e["name"][:1].upper(), 18, panels.COL_GLYPH)
+        if names:
+            drawing.text(box[0] + 1, box[1] + 1,
+                         e["name"][:int((box[2] - box[0]) / 5.6)], size=10,
+                         color=COL_TXT)
         if inside:
             panels.hover_tip = e["name"]
 
@@ -193,8 +239,8 @@ def press(context, w, h, mx, my):
     if not (rect[0] <= mx <= rect[2] and rect[1] <= my <= rect[3]):
         return False
     _st.update(last=(mx, my), moved=0.0, press=None)
-    for i, e, r in _slots(ents, rect, vertical):
-        if r[0] <= mx <= r[2] and r[1] <= my <= r[3]:
+    for i, e, box, icon in _slots(ents, rect, vertical, _item(context)):
+        if box[0] <= mx <= box[2] and box[1] <= my <= box[3]:
             _st["press"] = e
             break
     return 'fb_scroll'

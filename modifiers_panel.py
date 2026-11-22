@@ -189,6 +189,204 @@ def vertex_groups_ui(layout, context, obj):
                     text="Weight")
 
 
+# ----------------------------------------------------------------------
+# Physics and Particles (Object Mode)
+# ----------------------------------------------------------------------
+
+_PHYS = (("Cloth", 'CLOTH', 'MOD_CLOTH'),
+         ("Collision", 'COLLISION', 'MOD_PHYSICS'),
+         ("Soft Body", 'SOFT_BODY', 'MOD_SOFT'),
+         ("Dynamic Paint", 'DYNAMIC_PAINT', 'MOD_DYNAMICPAINT'),
+         ("Fluid", 'FLUID', 'MOD_FLUIDSIM'),
+         ("Rigid Body", 'RIGID_BODY', 'RIGID_BODY'),
+         ("Force Field", 'FORCE_FIELD', 'FORCE_FORCE'))
+
+
+def _props(layout, owner, names):
+    if owner is None:
+        return
+    for n in names:
+        try:
+            layout.prop(owner, n)
+        except (TypeError, RuntimeError, AttributeError):
+            pass
+
+
+def _has_phys(obj, kind):
+    if kind == 'RIGID_BODY':
+        return obj.rigid_body is not None
+    if kind == 'FORCE_FIELD':
+        return obj.field is not None and obj.field.type != 'NONE'
+    return any(m.type == kind for m in obj.modifiers)
+
+
+def _first_mod(obj, kind):
+    return next((m for m in obj.modifiers if m.type == kind), None)
+
+
+class NOMAD_OT_physics_toggle(bpy.types.Operator):
+    bl_idname = "nomad.physics_toggle"
+    bl_label = "Physics"
+    bl_description = "Add or remove this physics type on the active object"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    kind: bpy.props.StringProperty()
+
+    def execute(self, context):
+        obj = context.active_object
+        if obj is None:
+            return {'CANCELLED'}
+        k = self.kind
+        try:
+            if k == 'FORCE_FIELD':
+                obj.field.type = 'FORCE' if obj.field.type == 'NONE' else 'NONE'
+            elif k == 'RIGID_BODY':
+                def _run():
+                    if obj.rigid_body is not None:
+                        bpy.ops.rigidbody.object_remove()
+                    else:
+                        bpy.ops.rigidbody.object_add()
+                _with_object_mode(context, obj, _run)
+            else:
+                mods = [m for m in obj.modifiers if m.type == k]
+                if mods:
+                    for m in mods:
+                        obj.modifiers.remove(m)
+                else:
+                    obj.modifiers.new(name=k.replace("_", " ").title(),
+                                      type=k)
+        except (RuntimeError, TypeError, AttributeError) as exc:
+            self.report({'WARNING'}, f"{k}: {exc}")
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+class NOMAD_OT_particle_action(bpy.types.Operator):
+    bl_idname = "nomad.particle_action"
+    bl_label = "Particle System"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    action: bpy.props.EnumProperty(items=[
+        ('ADD', "Add", "Add a particle system"),
+        ('REMOVE', "Remove", "Remove this particle system"),
+        ('SELECT', "Select", "Make it the active particle system")])
+    index: bpy.props.IntProperty()
+
+    def execute(self, context):
+        obj = context.active_object
+        if obj is None or obj.type != 'MESH':
+            return {'CANCELLED'}
+        try:
+            if self.action == 'ADD':
+                _with_object_mode(context, obj,
+                                  bpy.ops.object.particle_system_add)
+            else:
+                systems = obj.particle_systems
+                if not 0 <= self.index < len(systems):
+                    return {'CANCELLED'}
+                systems.active_index = self.index
+                if self.action == 'REMOVE':
+                    _with_object_mode(context, obj,
+                                      bpy.ops.object.particle_system_remove)
+        except (RuntimeError, AttributeError) as exc:
+            self.report({'WARNING'}, f"{self.action}: {exc}")
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+def physics_ui(layout, context, obj):
+    if obj is None or obj.type != 'MESH':
+        layout.label(text="Physics: mesh objects only", icon='INFO')
+        return
+    g = layout.grid_flow(row_major=True, columns=2, even_columns=True,
+                         align=True)
+    for text, kind, icon in _PHYS:
+        on = _has_phys(obj, kind)
+        try:
+            op = g.operator("nomad.physics_toggle", text=text, icon=icon,
+                            depress=on)
+        except TypeError:                      # icon missing in this build
+            op = g.operator("nomad.physics_toggle", text=text, depress=on)
+        op.kind = kind
+
+    cloth = _first_mod(obj, 'CLOTH')
+    if cloth is not None:
+        box = layout.box()
+        box.label(text="Cloth", icon='MOD_CLOTH')
+        _props(box, cloth.settings, ("quality", "mass", "air_damping",
+                                     "vertex_group_mass"))
+        _props(box, cloth.collision_settings, ("use_collision",
+                                               "distance_min"))
+    if _has_phys(obj, 'COLLISION'):
+        box = layout.box()
+        box.label(text="Collision", icon='MOD_PHYSICS')
+        _props(box, obj.collision, ("damping", "thickness_outer",
+                                    "cloth_friction"))
+    soft = _first_mod(obj, 'SOFT_BODY')
+    if soft is not None:
+        box = layout.box()
+        box.label(text="Soft Body", icon='MOD_SOFT')
+        _props(box, soft.settings, ("mass", "friction", "use_goal"))
+    paint = _first_mod(obj, 'DYNAMIC_PAINT')
+    if paint is not None:
+        box = layout.box()
+        box.label(text="Dynamic Paint", icon='MOD_DYNAMICPAINT')
+        _props(box, paint, ("ui_type",))
+    fluid = _first_mod(obj, 'FLUID')
+    if fluid is not None:
+        box = layout.box()
+        box.label(text="Fluid", icon='MOD_FLUIDSIM')
+        _props(box, fluid, ("fluid_type",))
+        if fluid.fluid_type == 'DOMAIN':
+            _props(box, fluid.domain_settings, ("domain_type",
+                                                "resolution_max"))
+        elif fluid.fluid_type == 'FLOW':
+            _props(box, fluid.flow_settings, ("flow_type", "flow_behavior"))
+    if obj.rigid_body is not None:
+        box = layout.box()
+        box.label(text="Rigid Body", icon='RIGID_BODY')
+        _props(box, obj.rigid_body, ("type", "mass", "friction",
+                                     "collision_shape"))
+    if _has_phys(obj, 'FORCE_FIELD'):
+        box = layout.box()
+        box.label(text="Force Field", icon='FORCE_FORCE')
+        _props(box, obj.field, ("type", "strength", "shape", "flow"))
+
+
+def particles_ui(layout, context, obj):
+    if obj is None or obj.type != 'MESH':
+        layout.label(text="Particles: mesh objects only", icon='INFO')
+        return
+    row = layout.row(align=True)
+    row.operator("nomad.particle_action", text="Add System",
+                 icon='ADD').action = 'ADD'
+    systems = obj.particle_systems
+    if not len(systems):
+        layout.label(text="No particle systems", icon='INFO')
+        return
+    box = layout.box()
+    active = systems.active_index
+    for i, ps in enumerate(systems):
+        row = box.row(align=True)
+        op = row.operator("nomad.particle_action", text=ps.name,
+                          depress=(i == active))
+        op.action, op.index = 'SELECT', i
+        op = row.operator("nomad.particle_action", text="", icon='X')
+        op.action, op.index = 'REMOVE', i
+    ps = systems.active
+    st = ps.settings if ps is not None else None
+    if st is None:
+        return
+    box = layout.box()
+    box.label(text=st.name, icon='PARTICLES')
+    _props(box, st, ("type", "count"))
+    if st.type == 'EMITTER':
+        _props(box, st, ("frame_start", "frame_end", "lifetime"))
+    else:
+        _props(box, st, ("hair_length",))
+    _props(box, st, ("emit_from", "physics_type", "render_type"))
+
+
 class NOMAD_PT_modifiers(bpy.types.Panel):
     bl_label = "Modifiers"
     bl_idname = "NOMAD_PT_modifiers"
@@ -210,6 +408,16 @@ class NOMAD_PT_modifiers(bpy.types.Panel):
                         closed=True)
         if body is not None:
             vertex_groups_ui(body, context, obj)
+
+        if context.mode == 'OBJECT':               # closed until opened
+            body = _section(layout, "nomad_mod_physics", "Physics",
+                            closed=True)
+            if body is not None:
+                physics_ui(body, context, obj)
+            body = _section(layout, "nomad_mod_particles", "Particles",
+                            closed=True)
+            if body is not None:
+                particles_ui(body, context, obj)
 
     def _modifiers(self, layout, context, obj):
         layout.operator("wm.call_menu", text="Add",
@@ -255,7 +463,8 @@ class NOMAD_PT_modifiers(bpy.types.Panel):
         else:
             _generic(box, mod)
 
-CLASSES = (NOMAD_OT_modifier_action, NOMAD_PT_modifiers)
+CLASSES = (NOMAD_OT_modifier_action, NOMAD_OT_physics_toggle,
+           NOMAD_OT_particle_action, NOMAD_PT_modifiers)
 
 
 def register():

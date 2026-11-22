@@ -41,6 +41,7 @@ nav_mode = None             # None | 'ZOOM' | 'PAN' | 'ROLL'
 _color_logged = False
 stencil_mode = None         # None | 'MOVE' | 'SCALE' | 'ROTATE'
 clone_armed = False
+_clone = {"on": False, "pos": (0.0, 0.0)}   # tap in progress
 stencil_target = 'PRIMARY'  # PRIMARY = brush texture, SECONDARY = mask
 _nav = {"last": (0, 0), "moved": 0.0, "ball": None}
 
@@ -322,7 +323,17 @@ def _nav_update(context, mx, my, kind):
 
 
 def release(context):
-    """Drag ended (navigation): a tap on an axis ball jumps to that view."""
+    """Drag ended (navigation): a tap on an axis ball jumps to that view.
+    Also ends 'Set Clone': the cursor is placed where the finger lifts."""
+    global clone_armed
+    if _clone["on"]:
+        _clone["on"] = False
+        clone_armed = False
+        from .sculpt_popups import _view3d_override
+        _win, area, _region = _view3d_override()
+        if area is not None:
+            _set_cursor_at(context, area, *_clone["pos"])
+        return
     from . import nav_gizmo
     nav_gizmo.release(context)
 
@@ -530,47 +541,69 @@ _pal_scroll = 0          # first visible palette row
 
 
 def layout(context, w, h, paint):
+    """Picker (+ palette) in one of three corners. The palette goes below
+    the picker, beside it (on its inner side) or is left out."""
     global _pal_scroll
-    from . import style
+    from . import style, fav_bar
+    sc = context.scene
+    corner = getattr(sc, "nomad_picker_corner", 'BOTTOM_RIGHT')
+    pmode = getattr(sc, "nomad_picker_palette", 'BELOW')
+    right = corner.endswith('RIGHT')
+    bottom = corner.startswith('BOTTOM')
+    sidebar_left = getattr(sc, "nomad_sidebar_left", False)
+
     pw = UNITS_WIDE * PX_PER_UNIT
     iw = pw - 2 * PAD
     sq = iw - HUE_W - GAP
     tile = (iw - (PAL_COLS - 1) * PAL_GAP) / PAL_COLS
 
-    pal = getattr(paint, "palette", None)
+    pal = getattr(paint, "palette", None) if pmode != 'NONE' else None
     ncol = len(pal.colors) if pal is not None else 0
     rows_total = math.ceil(ncol / PAL_COLS)
 
-    left = getattr(context.scene, "nomad_sidebar_left", False)
-    x2 = w - (8 if left else RIGHT_MARGIN) - _fav_shift(context)
-    x1 = x2 - pw
-    y_lo = style._stack_top(context)
-    y_hi = h - BAR_H - 10.0
-    if getattr(context.scene, "nomad_nav_gizmo", True):
-        y_hi = min(y_hi, _nav_geometry(context, w, h)[3] - 10.0)
+    # horizontal: next to the tool bars, which sit on the sides
+    if right:
+        x2 = w - (8 if sidebar_left else RIGHT_MARGIN) - _fav_shift(context)
+        x1 = x2 - pw
+    else:
+        x1 = (RIGHT_MARGIN + (style.STEP if sidebar_left else 0)
+              + style.left_inset(context))
+        x2 = x1 + pw
 
-    fixed = PAD + sq + GAP + BTN_H + GAP + PBTN_H + PAD
+    # vertical: the side columns go down to the bottom of the screen
+    floor_fn = getattr(style, "_side_floor", style._stack_top)
+    y_lo = floor_fn(context) + fav_bar.bottom_offset(context)
+    y_hi = h - BAR_H - 10.0 - style.top_inset(context)
+    if right and getattr(sc, "nomad_nav_gizmo", True):
+        y_hi = min(y_hi, _nav_geometry(context, w, h)[3] - 10.0)
     avail = y_hi - y_lo
+
+    base_h = PAD + sq + GAP + BTN_H + PAD          # picker without palette
+    beside = pmode == 'BESIDE'
+    fixed = (PAD + PBTN_H + PAD) if beside else (base_h + GAP + PBTN_H)
 
     def tiles_h(r):
         return (GAP + r * tile + (r - 1) * PAL_GAP) if r else 0
 
-    rows = min(PAL_MAX_ROWS, rows_total)
-    while rows > 1 and (fixed + tiles_h(rows)
-                        + (ARROW_H + GAP if rows_total > rows else 0)) > avail:
-        rows -= 1
+    rows = 0
+    if pmode != 'NONE':
+        rows = min(PAL_MAX_ROWS, rows_total)
+        while rows > 1 and (fixed + tiles_h(rows)
+                            + (ARROW_H + GAP if rows_total > rows else 0)
+                            ) > avail:
+            rows -= 1
     scrollable = rows_total > rows
     max_scroll = rows_total - rows if scrollable else 0
     _pal_scroll = max(0, min(_pal_scroll, max_scroll))
-    ph = fixed + tiles_h(rows) + (ARROW_H + GAP if scrollable else 0)
+    pal_h = fixed + tiles_h(rows) + (ARROW_H + GAP if scrollable else 0)
+    ph = base_h if (beside or pmode == 'NONE') else pal_h
 
-    cy = (y_lo + h - BAR_H) / 2
-    y2 = min(cy + ph / 2, y_hi)
-    y1 = y2 - ph
-    if y1 < y_lo:
-        y1 = y_lo
-        y2 = y1 + ph
+    def anchor(height):
+        if bottom:
+            return y_lo, min(y_lo + height, y_hi)
+        return max(y_hi - height, y_lo), y_hi
 
+    y1, y2 = anchor(ph)
     ix = x1 + PAD
     sv = (ix, y2 - PAD - sq, ix + sq, y2 - PAD)
     hue = (sv[2] + GAP, sv[1], sv[2] + GAP + HUE_W, sv[3])
@@ -582,31 +615,42 @@ def layout(context, w, h, paint):
     sample = (swatch[2] + GAP, ry1, swatch[2] + GAP + bw, ry2)
     rand = (sample[2] + GAP, ry1, sample[2] + GAP + bw, ry2)
 
-    pb2 = ry1 - GAP
-    pb1 = pb2 - PBTN_H
-    palbtn = (ix, pb1, ix + iw - 2 * (PBTN_H + GAP), pb2)
-    paladd = (palbtn[2] + GAP, pb1, palbtn[2] + GAP + PBTN_H, pb2)
-    paldel = (paladd[2] + GAP, pb1, ix + iw, pb2)
+    panel2 = None
+    palbtn = paladd = paldel = None
+    tiles, arrows = [], None
+    if pmode != 'NONE':
+        if beside:
+            by1, by2 = anchor(pal_h)
+            gap2 = 6
+            px1 = (x1 - gap2 - pw) if right else (x2 + gap2)
+            panel2 = (px1, by1, px1 + pw, by2)
+            pix, ptop = px1 + PAD, by2 - PAD
+        else:
+            pix, ptop = ix, ry1 - GAP
+        pb2 = ptop
+        pb1 = pb2 - PBTN_H
+        palbtn = (pix, pb1, pix + iw - 2 * (PBTN_H + GAP), pb2)
+        paladd = (palbtn[2] + GAP, pb1, palbtn[2] + GAP + PBTN_H, pb2)
+        paldel = (paladd[2] + GAP, pb1, pix + iw, pb2)
 
-    top = pb1 - GAP
-    first = _pal_scroll * PAL_COLS
-    count = max(0, min(rows * PAL_COLS, ncol - first))
-    tiles = []
-    for n in range(count):
-        r, c = divmod(n, PAL_COLS)
-        tx = ix + c * (tile + PAL_GAP)
-        ty2 = top - r * (tile + PAL_GAP)
-        tiles.append(((tx, ty2 - tile, tx + tile, ty2), first + n))
+        top = pb1 - GAP
+        first = _pal_scroll * PAL_COLS
+        count = max(0, min(rows * PAL_COLS, ncol - first))
+        for n in range(count):
+            r, c = divmod(n, PAL_COLS)
+            tx = pix + c * (tile + PAL_GAP)
+            ty2 = top - r * (tile + PAL_GAP)
+            tiles.append(((tx, ty2 - tile, tx + tile, ty2), first + n))
 
-    arrows = None
-    if scrollable:
-        bottom = top - rows * tile - (rows - 1) * PAL_GAP
-        ay2 = bottom - GAP
-        ay1 = ay2 - ARROW_H
-        mid = ix + iw / 2
-        arrows = ((ix, ay1, mid - 2, ay2), (mid + 2, ay1, ix + iw, ay2))
+        if scrollable:
+            bottom_y = top - rows * tile - (rows - 1) * PAL_GAP
+            ay2 = bottom_y - GAP
+            ay1 = ay2 - ARROW_H
+            mid = pix + iw / 2
+            arrows = ((pix, ay1, mid - 2, ay2), (mid + 2, ay1, pix + iw, ay2))
 
-    return {"panel": (x1, y1, x2, y2), "sv": sv, "hue": hue,
+    return {"panel": (x1, y1, x2, y2), "panel2": panel2, "mode": pmode,
+            "sv": sv, "hue": hue,
             "swatch": swatch, "sample": sample, "rand": rand,
             "palbtn": palbtn, "paladd": paladd, "paldel": paldel,
             "tiles": tiles, "pal": pal, "arrows": arrows,
@@ -627,6 +671,8 @@ def draw(context, w, h, mx, my):
     _sync(rgb)
 
     _r(L["panel"], COL_BG)
+    if L["panel2"] is not None:
+        _r(L["panel2"], COL_BG)
 
     sv = L["sv"]
     drawing.gradient_sv(sv[0], sv[1], sv[2], sv[3], hsv[0])
@@ -654,6 +700,8 @@ def draw(context, w, h, mx, my):
         drawing.text((rc[0] + rc[2]) / 2, (rc[1] + rc[3]) / 2 - 4, label,
                      size=12, color=COL_TEXT, align='CENTER')
 
+    if L["mode"] == 'NONE':
+        return
     # Palette row: browser | add color | delete color
     pal = L["pal"]
     pb = L["palbtn"]
@@ -714,7 +762,8 @@ def press(context, w, h, mx, my):
         return False
     paint, brush = _paint(context)
     L = layout(context, w, h, paint)
-    if not _in(L["panel"], mx, my):
+    if not (_in(L["panel"], mx, my)
+            or (L["panel2"] is not None and _in(L["panel2"], mx, my))):
         return False
     if _in(L["sv"], mx, my):
         return 'color_sv'
@@ -726,6 +775,8 @@ def press(context, w, h, mx, my):
     if _in(L["rand"], mx, my):
         _randomize(context, brush)
         return True
+    if L["mode"] == 'NONE':
+        return True                      # panel background
     if _in(L["palbtn"], mx, my):
         from .sculpt_popups import open_panel_deferred
         open_panel_deferred("NOMAD_PT_palettes")
@@ -764,7 +815,9 @@ def wheel(area, region, mx, my, direction):
     w, h = style.region_size(region)
     paint, brush = _paint(context)
     L = layout(context, w, h, paint)
-    if not _in(L["panel"], mx, my) or not L["arrows"]:
+    over = (_in(L["panel"], mx, my)
+            or (L["panel2"] is not None and _in(L["panel2"], mx, my)))
+    if not over or not L["arrows"]:
         return False
     _pal_scroll = max(0, min(L["max_scroll"], _pal_scroll - direction))
     return True
@@ -778,9 +831,9 @@ def viewport_press(context, area, mx, my):
         _do_sample(context, area, mx, my)
         return True
     if clone_armed:
-        clone_armed = False
-        _set_cursor_at(context, area, mx, my)
-        return True
+        # modal: the press starts it, the cursor lands on the release
+        _clone.update(on=True, pos=(mx, my))
+        return 'nav_clone'
     if stencil_mode and stencil_available(context):
         _nav.update(last=(mx, my), moved=0.0, ball=None)
         return 'st_' + stencil_mode.lower()
@@ -791,6 +844,13 @@ def viewport_press(context, area, mx, my):
 
 
 def update(context, w, h, mx, my, kind):
+    if kind == 'nav_clone':
+        _clone["pos"] = (mx, my)             # the cursor follows the finger
+        from .sculpt_popups import _view3d_override
+        _win, area, _region = _view3d_override()
+        if area is not None:
+            _set_cursor_at(context, area, mx, my)
+        return
     if kind.startswith('st_'):
         _stencil_update(context, mx, my, kind)
         return
@@ -882,6 +942,18 @@ CLASSES = (NOMAD_OT_palette_new, NOMAD_OT_palette_color, NOMAD_PT_palettes)
 
 
 def register():
+    bpy.types.Scene.nomad_picker_corner = bpy.props.EnumProperty(
+        name="Position", default='BOTTOM_RIGHT',
+        description="Corner of the viewport where the color picker sits",
+        items=[('BOTTOM_RIGHT', "Bottom Right", ""),
+               ('TOP_LEFT', "Top Left", ""),
+               ('BOTTOM_LEFT', "Bottom Left", "")])
+    bpy.types.Scene.nomad_picker_palette = bpy.props.EnumProperty(
+        name="Palette", default='BELOW',
+        description="Where the color palette is drawn",
+        items=[('BELOW', "Below the Picker", ""),
+               ('BESIDE', "Beside the Picker", ""),
+               ('NONE', "Picker Only", "")])
     for cls in CLASSES:
         bpy.utils.register_class(cls)
 
@@ -889,6 +961,9 @@ def register():
 def unregister():
     global nav_mode
     nav_mode = None
+    for name in ("nomad_picker_corner", "nomad_picker_palette"):
+        if hasattr(bpy.types.Scene, name):
+            delattr(bpy.types.Scene, name)
     for cls in reversed(CLASSES):
         try:
             bpy.utils.unregister_class(cls)

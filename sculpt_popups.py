@@ -1,4 +1,4 @@
-# Popups de la barra lateral de escultura: Simetría y Dyntopo/Remesh.
+# Sculpt sidebar popups: Symmetry and Dyntopo/Remesh.
 # Paneles VIEW_3D/WINDOW, se abren con call_panel desde un timer.
 import bpy
 
@@ -28,9 +28,10 @@ def _section(layout, key, title, closed=False):
     return box
 
 
-def open_panel_deferred(panel_name):
+def open_panel_deferred(panel_name, keep_open=True):
     """Abre un panel popup FUERA del modal. Re-busca el área al momento
-    (nunca usa referencias guardadas)."""
+    (nunca usa referencias guardadas). keep_open=False: el popup se cierra
+    al pulsar un botón (el siguiente toque ya llega al viewport)."""
     def _run():
         try:
             C = bpy.context
@@ -48,7 +49,8 @@ def open_panel_deferred(panel_name):
             if area is None:
                 return None
             with C.temp_override(window=win, area=area, region=region):
-                bpy.ops.wm.call_panel('INVOKE_DEFAULT', name=panel_name)
+                bpy.ops.wm.call_panel('INVOKE_DEFAULT', name=panel_name,
+                                      keep_open=keep_open)
         except (RuntimeError, AttributeError, ReferenceError) as exc:
             print(f"NomadUI popup {panel_name}: {exc}")
         return None
@@ -128,7 +130,7 @@ class NOMAD_PT_dyntopo(bpy.types.Panel):
         l = self.layout
         obj, me = _mesh(context)
         if me is None:
-            l.label(text="Sin malla activa", icon='INFO')
+            l.label(text="No active mesh", icon='INFO')
             return
         sc = context.tool_settings.sculpt
 

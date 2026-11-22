@@ -837,9 +837,11 @@ class NOMAD_PT_brushes(bpy.types.Panel):
         row.operator("nomad.shelf_refresh", text="", icon='FILE_REFRESH')
         row.operator("nomad.shelf_clean", text="", icon='TRASH')
 
+        from . import asset_gpu
         entries = _cache.get(context.mode)
         if entries is None:
             l.label(text="Press refresh to load brushes", icon='INFO')
+            asset_gpu.draw_manage(l, context)
             return
 
         l.prop(wm, "nomad_shelf_lib", text="")           # library dropdown
@@ -867,6 +869,7 @@ class NOMAD_PT_brushes(bpy.types.Panel):
             op.lib_id = entry["lib_id"]
             op.rel = entry["rel"]
         l.label(text=f"{len(entries)} brushes", icon='BRUSH_DATA')
+        asset_gpu.draw_manage(l, context)
 
 
 class NOMAD_PT_favorites(bpy.types.Panel):

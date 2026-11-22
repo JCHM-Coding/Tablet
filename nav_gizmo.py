@@ -3,7 +3,9 @@
 import math
 
 import bpy
+import gpu
 from bpy_extras import view3d_utils
+from gpu_extras.batch import batch_for_shader
 from mathutils import Quaternion, Vector
 
 from . import color_overlay as co
@@ -152,6 +154,97 @@ def _is_on(mode, rv3d, qp):
     return False
 
 
+# ----------------------------------------------------------------------
+# Button icons: vector shapes centred on the middle of the button (the font
+# glyphs have different metrics, so drawing them from the same height left
+# some of them off centre)
+# ----------------------------------------------------------------------
+
+def _seg(t, x1, y1, x2, y2, w):
+    dx, dy = x2 - x1, y2 - y1
+    n = math.hypot(dx, dy) or 1.0
+    nx, ny = -dy / n * w / 2, dx / n * w / 2
+    a, b = (x1 + nx, y1 + ny), (x1 - nx, y1 - ny)
+    c, d = (x2 - nx, y2 - ny), (x2 + nx, y2 + ny)
+    t += [a, b, c, a, c, d]
+
+
+def _arc(t, cx, cy, r, a0, a1, w, n=16):
+    pts = [(cx + r * math.cos(math.radians(a0 + (a1 - a0) * i / n)),
+            cy + r * math.sin(math.radians(a0 + (a1 - a0) * i / n)))
+           for i in range(n + 1)]
+    for p, q in zip(pts, pts[1:]):
+        _seg(t, p[0], p[1], q[0], q[1], w)
+
+
+def _box(t, x1, y1, x2, y2):
+    t += [(x1, y1), (x2, y1), (x2, y2), (x1, y1), (x2, y2), (x1, y2)]
+
+
+def _outline(t, x1, y1, x2, y2, w):
+    _seg(t, x1 - w / 2, y1, x2 + w / 2, y1, w)
+    _seg(t, x1 - w / 2, y2, x2 + w / 2, y2, w)
+    _seg(t, x1, y1, x1, y2, w)
+    _seg(t, x2, y1, x2, y2, w)
+
+
+def _arrow_head(t, x, y, dx, dy, big=4.5, half=3.2):
+    """Triangle with its tip at (x, y) + direction * big."""
+    nx, ny = -dy, dx
+    t += [(x + dx * big, y + dy * big), (x + nx * half, y + ny * half),
+          (x - nx * half, y - ny * half)]
+
+
+def _icon_tris(mode):
+    t = []
+    if mode == 'ZOOM':                      # magnifier
+        _arc(t, -1.5, 1.5, 5.5, 0, 360, 2.0, 20)
+        _seg(t, 2.4, -2.4, 7.0, -7.0, 3.0)
+    elif mode == 'PAN':                     # four arrows
+        _seg(t, -6, 0, 6, 0, 2.0)
+        _seg(t, 0, -6, 0, 6, 2.0)
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            _arrow_head(t, dx * 5.5, dy * 5.5, dx, dy, 4.5, 3.4)
+    elif mode == 'ROLL':                    # clockwise arc with arrow head
+        _arc(t, 0, 0, 7.0, 120, -150, 2.0, 22)
+        a = math.radians(-150)
+        px, py = 7.0 * math.cos(a), 7.0 * math.sin(a)
+        tx, ty = math.sin(a), -math.cos(a)  # clockwise tangent
+        _arrow_head(t, px, py, tx, ty, 4.8, 3.6)
+    elif mode == 'CAMERA':                  # body + lens
+        _outline(t, -8.5, -5, 2.5, 5, 2.0)
+        t += [(2.5, 0), (8.5, 5), (8.5, -5)]
+    elif mode == 'LOCK':                    # padlock
+        _box(t, -6, -6.5, 6, 2.5)
+        _arc(t, 0, 2.5, 4.0, 0, 180, 2.0, 12)
+    elif mode == 'SYNC':                    # two opposite arrows
+        _seg(t, -8, 3, 5, 3, 2.0)
+        _arrow_head(t, 5, 3, 1, 0, 4.0, 3.2)
+        _seg(t, 8, -3, -5, -3, 2.0)
+        _arrow_head(t, -5, -3, -1, 0, 4.0, 3.2)
+    return t
+
+
+_VECTOR = ('ZOOM', 'PAN', 'ROLL', 'CAMERA', 'LOCK', 'SYNC')
+# the arrow head / lens / shackle make the shape lopsided: nudge it so that
+# the middle of the icon (not of the strokes) is the middle of the button
+_NUDGE = {'ROLL': (0.6, 0.0), 'CAMERA': (0.5, 0.0), 'LOCK': (0.0, -0.5)}
+
+
+def _draw_icon(mode, rect, color):
+    tris = _icon_tris(mode)
+    if not tris:
+        return
+    cx, cy = (rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2
+    k = (rect[3] - rect[1]) / 36.0
+    ox, oy = _NUDGE.get(mode, (0.0, 0.0))
+    pos = [(cx + (x + ox) * k, cy + (y + oy) * k) for x, y in tris]
+    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    batch = batch_for_shader(shader, 'TRIS', {"pos": pos})
+    shader.uniform_float("color", color)
+    batch.draw(shader)
+
+
 def draw(context, w, h, mx, my):
     qp = _quad_props(_area(context)) if is_quad(_area(context)) else None
     for it in _items(context, w, h):
@@ -173,14 +266,18 @@ def draw(context, w, h, mx, my):
                                     col[2] * 0.55, 0.9))
         for rect, mode, glyph in it["buttons"]:
             hot = co._in(rect, mx, my)
-            co._r(rect, co.COL_HOVER if hot
-                  else co.COL_ON if _is_on(mode, rv3d, qp) else co.COL_BTN)
-            label = glyph
-            if mode == 'PERSP':
-                label = "P" if rv3d.is_perspective else "O"
-            drawing.text((rect[0] + rect[2]) / 2,
-                         (rect[1] + rect[3]) / 2 - 8, label, size=18,
-                         color=co.COL_TEXT, align='CENTER')
+            if hot or _is_on(mode, rv3d, qp):  # at rest only the capsule shows
+                drawing.rrect(rect[0], rect[1], rect[2], rect[3],
+                              drawing.BEVEL, panels.COL_SIDE_ON)
+            if mode in _VECTOR:
+                _draw_icon(mode, rect, co.COL_TEXT)
+            else:                       # letters: centred on the button
+                label = glyph
+                if mode == 'PERSP':
+                    label = "P" if rv3d.is_perspective else "O"
+                drawing.glyph((rect[0] + rect[2]) / 2,
+                              (rect[1] + rect[3]) / 2, label, 18,
+                              co.COL_TEXT)
             if hot:
                 panels.hover_tip = _TIPS.get(mode, "")
 

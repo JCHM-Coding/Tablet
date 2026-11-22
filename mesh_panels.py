@@ -342,18 +342,19 @@ class NOMAD_PT_mesh_group(bpy.types.Panel):
 # Quick actions (right bar)
 # ----------------------------------------------------------------------
 
-SELECT_ACTIONS = [
+SELECT_ACTIONS = [                       # two per row, in this order
     ("Select All", "mesh.select_all", {"action": 'SELECT'}),
     ("Select None", "mesh.select_all", {"action": 'DESELECT'}),
-    ("Select Invert", "mesh.select_all", {"action": 'INVERT'}),
     ("Select More", "mesh.select_more", {}),
     ("Select Less", "mesh.select_less", {}),
-    ("Edge Loops", "mesh.loop_multi_select", {"ring": False}),
-    ("Edge Rings", "mesh.loop_multi_select", {"ring": True}),
+    ("Edge Loop", "mesh.select_edge_loop_multi", {}),
+    ("Edge Ring", "mesh.select_edge_ring_multi", {}),
+    ("Select Invert", "mesh.select_all", {"action": 'INVERT'}),
+    ("Checker Deselect", "mesh.select_nth", {}),
+    ("Select Linked", "mesh.select_linked", {}),
     ("Shortest Path", "mesh.shortest_path_select", {}),
     ("Region to Loop", "mesh.region_to_loop", {}),
     ("Loop to Region", "mesh.loop_to_region", {}),
-    ("Select Linked", "mesh.select_linked", {}),
 ]
 
 DELETE_ACTIONS = [
@@ -456,12 +457,16 @@ class NOMAD_PT_edit_operators(bpy.types.Panel):
         if not menus:
             l.label(text="No operators for this mode yet", icon='INFO')
             return
+        from . import edit_ops
+        edit_ops.reset_tokens()
         for label, menu in menus:
             body = _section(l, f"nomad_ops_{menu}", label, closed=True)
             if body is None:
                 continue
             if hasattr(bpy.types, menu):
-                body.menu_contents(menu)
+                # drag operators: release arms them, press drags, release
+                # confirms (see edit_ops.py)
+                edit_ops.draw_menu(body, menu, context)
             else:
                 body.label(text=f"{menu} not found", icon='INFO')
 

@@ -7,21 +7,47 @@ import re
 import bpy
 from mathutils import Euler, Quaternion
 
+from .anim_options import bone_selected, set_bone_selected
+
 _PATH = re.compile(r'^pose\.bones\["(.+)"\]\.'
                    r'(location|rotation_quaternion|rotation_euler|scale)$')
 
 
-def _fcurves_of(act):
+def _slots_for(act, obj):
+    """Slots of the action that belong to the armature (Blender 4.4+).
+    Multi-character poses have one slot per armature: take the one that
+    matches the object, falling back to the first slot (as Blender does)."""
+    slots = list(getattr(act, "slots", ()))
+    if not slots or obj is None:
+        return slots[:1]
+    ident = "OB" + obj.name
+    match = [s for s in slots if s.identifier == ident]
+    return match or slots[:1]
+
+
+def _fcurves_of(act, obj=None):
     out = []
     try:
-        out.extend(act.fcurves)                  # legacy API
+        out.extend(act.fcurves)                  # legacy API (< 5.0)
     except (AttributeError, RuntimeError):
         pass
-    if not out:
-        for layer in getattr(act, "layers", ()):
-            for strip in layer.strips:
-                for cb in getattr(strip, "channelbags", ()):
-                    out.extend(cb.fcurves)
+    if out:
+        return out
+    slots = _slots_for(act, obj)
+    for layer in getattr(act, "layers", ()):
+        for strip in layer.strips:
+            bags = []
+            for slot in slots:                   # only the matching slot
+                try:
+                    cb = strip.channelbag(slot)
+                except (AttributeError, RuntimeError, TypeError):
+                    cb = None
+                if cb is not None:
+                    bags.append(cb)
+            if not bags and not slots:           # no slot info: take all
+                bags = list(getattr(strip, "channelbags", ()))
+            for cb in bags:
+                out.extend(cb.fcurves)
     return out
 
 
@@ -33,11 +59,11 @@ def _pose_frame(act):
     return markers[0].frame if markers else act.frame_range[0]
 
 
-def read_pose(act):
+def read_pose(act, obj=None):
     """{bone: {prop: {index: value}}} evaluated at the pose frame."""
     frame = _pose_frame(act)
     pose = {}
-    for fc in _fcurves_of(act):
+    for fc in _fcurves_of(act, obj):
         m = _PATH.match(fc.data_path)
         if not m:
             continue
@@ -48,6 +74,24 @@ def read_pose(act):
             continue
         pose.setdefault(bone, {}).setdefault(prop, {})[fc.array_index] = val
     return pose
+
+
+# Starting pose of a blend: re-applying with another slider value blends
+# from the pose as it was before the first Apply, instead of compounding.
+_base = {"key": None, "data": {}}
+
+
+def _snapshot(pb):
+    return (tuple(pb.location), tuple(pb.rotation_quaternion),
+            tuple(pb.rotation_euler), tuple(pb.scale))
+
+
+def _restore(pb, snap):
+    pb.location, pb.rotation_quaternion, pb.rotation_euler, pb.scale = snap
+
+
+def reset_base():
+    _base["key"], _base["data"] = None, {}
 
 
 def _mix(cur, idxvals, flips, f):
@@ -92,23 +136,46 @@ def _apply_bone(pb, props, flipped, f):
                                  zip(pb.rotation_euler, e)]
 
 
-def apply(context, act, flipped=False, factor=1.0):
+def apply(context, act, flipped=False, factor=1.0, blend=False):
     """Apply the pose to the selected bones (all if none). Returns how many
     bones were changed."""
     obj = context.active_object
     if obj is None or obj.type != 'ARMATURE' or obj.pose is None:
         return 0
-    pose = read_pose(act)
-    selected = {b.name for b in obj.data.bones if b.select}
+    pose = read_pose(act, obj)
+    selected = {b.name for b in obj.data.bones
+                if bone_selected(obj, b.name)}
+
+    key = (obj.name, act.name, flipped)
+    if blend:
+        if _base["key"] != key:                  # first apply of this blend
+            _base["key"] = key
+            _base["data"] = {pb.name: _snapshot(pb) for pb in obj.pose.bones}
+    else:
+        reset_base()
+
     count = 0
+    keyed = []
     for src, props in pose.items():
         dst = bpy.utils.flip_name(src) if flipped else src
         pb = obj.pose.bones.get(dst)
         if pb is None or (selected and dst not in selected):
             continue
+        if blend and dst in _base["data"]:
+            _restore(pb, _base["data"][dst])
         _apply_bone(pb, props, flipped, factor)
+        keyed.append(pb)
         count += 1
     context.view_layer.update()
+
+    if keyed and context.scene.tool_settings.use_keyframe_insert_auto:
+        for pb in keyed:
+            for path in ("location", "scale", pb.rotation_mode == 'QUATERNION'
+                         and "rotation_quaternion" or "rotation_euler"):
+                try:
+                    pb.keyframe_insert(path, group=pb.name)
+                except (RuntimeError, TypeError):
+                    pass
     return count
 
 
@@ -116,17 +183,22 @@ def select_bones(context, act, extend=False):
     obj = context.active_object
     if obj is None or obj.type != 'ARMATURE':
         return 0
-    names = set(read_pose(act))
+    names = set(read_pose(act, obj))
     if not extend:
         for b in obj.data.bones:
-            b.select = False
+            set_bone_selected(obj, b.name, False)
     n = 0
     for name in names:
         b = obj.data.bones.get(name)
         if b is not None:
-            b.select = True
+            set_bone_selected(obj, name, True)
             n += 1
             obj.data.bones.active = b
+    context.view_layer.update()
+    for area in context.screen.areas:
+        area.tag_redraw()
+    print(f"NomadUI pose bones: selected {n} of {len(names)} in the pose "
+          f"({len(obj.data.bones)} bones in the armature)")
     return n
 
 
@@ -168,7 +240,7 @@ class NOMAD_OT_pose_apply(bpy.types.Operator):
             return {'CANCELLED'}
         factor = context.scene.nomad_pose_blend if self.use_blend else 1.0
         n = with_action(a, lambda act: apply(context, act, self.flipped,
-                                             factor))
+                                             factor, self.use_blend))
         if not n:
             self.report({'WARNING'}, "No matching bones to apply the pose "
                                      "to (select an armature in Pose Mode)")
@@ -193,6 +265,7 @@ class NOMAD_OT_pose_select_bones(bpy.types.Operator):
             self.report({'WARNING'}, "This pose affects none of the bones "
                                      "of the active armature")
             return {'CANCELLED'}
+        self.report({'INFO'}, f"{n} bones selected")
         return {'FINISHED'}
 
 

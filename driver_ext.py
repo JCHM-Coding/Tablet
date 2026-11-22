@@ -465,40 +465,42 @@ def _set_interp(fc, v):
 _HANDLES = (('AUTO_CLAMPED', "AC", "Auto Clamped"), ('AUTO', "A", "Automatic"),
             ('VECTOR', "V", "Vector"), ('ALIGNED', "AL", "Aligned"),
             ('FREE', "F", "Free"))
-_TB = [("add", "Add", "Add a driver to the active object or bone"),
-       ("del", "Del", "Remove the selected driver"),
-       ("mute", "Mute", "Mute the selected driver"),
-       ("edit", "Edit", "Edit the driver (type, expression, variables)"),
-       ("upd", "Upd", "Update dependencies"), None,
-       ("fit", "Fit", "Fit the curve in the view"),
-       ("hz+", "H+", "Zoom in (driver value)"),
-       ("hz-", "H-", "Zoom out (driver value)"),
-       ("vz+", "V+", "Zoom in (property value)"),
-       ("vz-", "V-", "Zoom out (property value)"), None,
-       ("pt+", "Pt+", "Add a point on the curve (at the current input "
-        "value)"),
-       ("pt-", "Pt-", "Delete the selected points"), None]
-_TB += [("t:" + t, lbl, tip + " handles") for t, lbl, tip in _HANDLES]
-_TB += [None, ("i:CONSTANT", "Con", "Constant interpolation"),
-        ("i:LINEAR", "Lin", "Linear interpolation"),
-        ("i:BEZIER", "Bez", "Bezier interpolation"), None,
-        ("ext", "Ext", "Toggle extrapolation (constant / linear)"),
-        ("keys", "Keys", "Convert the curve to editable points"),
-        ("reset", "Reset", "Back to a straight 1:1 mapping")]
+_MENUS = ("driver", "view", "select", "key")
+_PANELS = {"driver": "NOMAD_PT_drv_driver", "view": "NOMAD_PT_drv_view",
+           "select": "NOMAD_PT_drv_select", "key": "NOMAD_PT_drv_key"}
+_TB = [("add", "Add Driver", "Add a driver to the active object or bone"),
+       None,
+       ("driver", "Driver", "Edit, mute or delete the active driver"),
+       ("view", "View", "View options"),
+       ("select", "Select", "Select the points of the curve"),
+       ("key", "Key", "Points, handles, interpolation, extrapolation")]
 
 
 def _buttons(context, tb):
-    out, x = [], tb[0] + 6
+    out, x = [], tb[0] + 8
     for it in _TB:
         if it is None:
-            x += 10
+            x += 12
             continue
         key, label, tip = it
-        wb = 34 if len(label) <= 2 else 40
+        if key in _MENUS:
+            wb = int(len(label) * 6.8) + 24
+        else:
+            wb = max(40, int(len(label) * 6.8) + 16)
         out.append((key, label, (x, tb[1] + 3, x + wb, tb[3] - 3), tip))
-        x += wb + 2
+        x += wb + 3
     out += tl.shared_buttons(context, x, tb)
     return out
+
+
+def _select_points(fc, mode):
+    for kp in fc.keyframe_points:
+        on = (True if mode == 'ALL' else False if mode == 'NONE'
+              else not kp.select_control_point)
+        kp.select_control_point = on
+        kp.select_left_handle = on
+        kp.select_right_handle = on
+    fc.update()
 
 
 def _tb_action(context, key, pa):
@@ -507,6 +509,9 @@ def _tb_action(context, key, pa):
     if key in tl.SHARED_KEYS:
         tl.shared_action(context, key)
         return
+    if key in _PANELS:
+        open_panel_deferred(_PANELS[key])
+        return
     obj, fc = _curve(context)
     if key == "add":
         open_panel_deferred("NOMAD_PT_driver_add")
@@ -514,6 +519,9 @@ def _tb_action(context, key, pa):
         context.view_layer.update()
     elif fc is None:
         return
+    elif key in ("sel_all", "sel_none", "sel_inv"):
+        _select_points(fc, {"sel_all": 'ALL', "sel_none": 'NONE',
+                            "sel_inv": 'INVERT'}[key])
     elif key == "edit":
         open_panel_deferred("NOMAD_PT_driver_edit")
     elif key == "del":
@@ -556,16 +564,20 @@ def _tb_action(context, key, pa):
 
 
 def _draw_toolbar(context, tb, mx, my):
-    obj, fc = _curve(context)
     for key, label, rect, tip in _buttons(context, tb):
         hot = _in(rect, mx, my)
-        on = ((key == "mute" and fc is not None and fc.mute)
-              or (key in tl.SHARED_KEYS and tl.shared_on(context, key)))
+        on = key in tl.SHARED_KEYS and tl.shared_on(context, key)
         drawing.rrect(rect[0], rect[1], rect[2], rect[3], 6,
                       panels.COL_HOVER if hot else tl.COL_PLAY if on
                       else BTN)
-        drawing.text((rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2 - 4,
-                     label, size=11, color=panels.COL_GLYPH, align='CENTER')
+        cx, cy = (rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2
+        if key in _MENUS:
+            drawing.text(rect[0] + 8, cy - 4, label, size=11,
+                         color=panels.COL_GLYPH)
+            drawing.glyph(rect[2] - 10, cy, "\u25be", 10, panels.COL_GLYPH)
+        else:
+            drawing.text(cx, cy - 4, label, size=11,
+                         color=panels.COL_GLYPH, align='CENTER')
         if hot:
             panels.hover_tip = tip
 
@@ -1194,8 +1206,115 @@ class NOMAD_PT_driver_edit(bpy.types.Panel):
         op.action = 'ADD'
 
 
+_DESC = {
+    "edit": "Edit the driver (type, expression, variables)",
+    "mute": "Mute the selected driver", "del": "Remove the selected driver",
+    "upd": "Update dependencies", "fit": "Fit the curve in the view",
+    "hz+": "Zoom in (driver value)", "hz-": "Zoom out (driver value)",
+    "vz+": "Zoom in (property value)", "vz-": "Zoom out (property value)",
+    "sel_all": "Select every point of the curve",
+    "sel_none": "Deselect every point",
+    "sel_inv": "Invert the point selection",
+    "pt+": "Add a point on the curve (at the current input value)",
+    "pt-": "Delete the selected points",
+    "ext": "Toggle extrapolation (constant / linear)",
+    "keys": "Convert the curve to editable points",
+    "reset": "Back to a straight 1:1 mapping",
+}
+
+
+class NOMAD_OT_drv_action(bpy.types.Operator):
+    bl_idname = "nomad.drv_action"
+    bl_label = "Drivers"
+    bl_options = {'REGISTER'}
+
+    key: bpy.props.StringProperty()
+
+    @classmethod
+    def description(cls, context, properties):
+        k = properties.key
+        if k.startswith("t:"):
+            return "Set the handle type of the selected points"
+        if k.startswith("i:"):
+            return "Set the interpolation of the selected points"
+        return _DESC.get(k, "Drivers action")
+
+    def execute(self, context):
+        try:
+            G, pa, info = _areas(context, _s["w"] or 900)
+            _tb_action(context, self.key, pa)
+        except Exception as exc:
+            self.report({'WARNING'}, f"{self.key}: {exc}")
+            return {'CANCELLED'}
+        for area in context.screen.areas:
+            area.tag_redraw()
+        return {'FINISHED'}
+
+
+def _grid(layout, items, cols=2):
+    g = layout.grid_flow(row_major=True, columns=cols, even_columns=True,
+                         align=True)
+    g.scale_y = 1.3
+    for text, key in items:
+        g.operator("nomad.drv_action", text=text).key = key
+    return g
+
+
+def _drv_panel(idname, title, units, draw_fn):
+    def draw(self, context):
+        self.layout.ui_units_x = units
+        draw_fn(self.layout, context)
+    return type(idname, (bpy.types.Panel,), {
+        "bl_label": title, "bl_idname": idname,
+        "bl_space_type": 'VIEW_3D', "bl_region_type": 'WINDOW',
+        "draw": draw})
+
+
+def _d_driver(l, context):
+    obj, fc = _curve(context)
+    if fc is None:
+        l.label(text="No driver selected (tap a channel)", icon='INFO')
+    else:
+        l.label(text=f"{obj.name}   {fc.data_path}[{fc.array_index}]",
+                icon='DRIVER')
+    _grid(l, [("Edit Driver", "edit"), ("Mute", "mute"),
+              ("Delete", "del"), ("Update Dependencies", "upd")], 2)
+
+
+def _d_view(l, context):
+    _grid(l, [("Frame All", "fit"), ("Zoom In (Driver)", "hz+"),
+              ("Zoom Out (Driver)", "hz-"), ("Zoom In (Property)", "vz+"),
+              ("Zoom Out (Property)", "vz-")], 2)
+
+
+def _d_select(l, context):
+    _grid(l, [("All", "sel_all"), ("None", "sel_none"),
+              ("Invert", "sel_inv")], 3)
+
+
+def _d_key(l, context):
+    _grid(l, [("Add Point", "pt+"), ("Delete Points", "pt-"),
+              ("To Points", "keys"), ("Reset", "reset")], 2)
+    l.label(text="Handle type")
+    _grid(l, [(name, "t:" + t) for t, _lbl, name in _HANDLES], 3)
+    l.label(text="Interpolation")
+    _grid(l, [("Constant", "i:CONSTANT"), ("Linear", "i:LINEAR"),
+              ("Bezier", "i:BEZIER")], 3)
+    l.label(text="Extrapolation")
+    _grid(l, [("Toggle Constant / Linear", "ext")], 1)
+
+
+NOMAD_PT_drv_driver = _drv_panel("NOMAD_PT_drv_driver", "Driver", 13,
+                                 _d_driver)
+NOMAD_PT_drv_view = _drv_panel("NOMAD_PT_drv_view", "View", 12, _d_view)
+NOMAD_PT_drv_select = _drv_panel("NOMAD_PT_drv_select", "Select", 11,
+                                 _d_select)
+NOMAD_PT_drv_key = _drv_panel("NOMAD_PT_drv_key", "Key", 13, _d_key)
+
 CLASSES = (NOMAD_OT_driver_add, NOMAD_OT_driver_var, NOMAD_OT_driver_curve,
-           NOMAD_PT_driver_add, NOMAD_PT_driver_edit)
+           NOMAD_PT_driver_add, NOMAD_PT_driver_edit, NOMAD_OT_drv_action,
+           NOMAD_PT_drv_driver, NOMAD_PT_drv_view, NOMAD_PT_drv_select,
+           NOMAD_PT_drv_key)
 
 
 def register():

@@ -4,6 +4,8 @@
 import array
 import math
 import os
+import time
+import uuid
 from pathlib import Path
 
 import bpy
@@ -13,7 +15,7 @@ from bpy_extras import view3d_utils
 from . import drawing, panels, safety, style
 from .top_bar import BAR_H
 from .sculpt_popups import open_panel_deferred, _view3d_override, defer_op
-from .brush_shelf import _read_cats
+from .brush_shelf import _read_cats, _parse_cats
 from .fav_bar import _draw_tex
 
 W = 340
@@ -118,12 +120,40 @@ def _add(idb, kind, attr, file, lib, path, ltype):
         _raw[key] = raw
 
 
+def _local_cats():
+    """Catalogs of the current file: the catalog file next to the .blend
+    (or in its parent folder). Only those two files are read, not a tree."""
+    cats = {}
+    if bpy.data.filepath:
+        here = Path(bpy.data.filepath).parent
+        for folder in (here.parent, here):          # the nearest one wins
+            f = folder / "blender_assets.cats.txt"
+            if f.is_file():
+                try:
+                    _parse_cats(f, cats)
+                except (OSError, UnicodeDecodeError):
+                    pass
+    return cats
+
+
+def _local_path(ad, cats):
+    """Catalog path of a local asset. A catalog that was just created is
+    not in the file yet: fall back to the simple name (path with '/' -> '-')."""
+    path = cats.get(str(ad.catalog_id).casefold(), "")
+    if not path:
+        simple = getattr(ad, "catalog_simple_name", "") or ""
+        path = simple.replace("-", "/").strip("/")
+    return path
+
+
 def _scan_local(context):
+    cats = _local_cats()
     for kind, attr in _ATTR.items():
         for idb in getattr(bpy.data, attr, ()):
             try:
                 if idb.library is None and idb.asset_data is not None:
-                    _add(idb, kind, attr, "", "Current File", "", 'LOCAL')
+                    _add(idb, kind, attr, "", "Current File",
+                         _local_path(idb.asset_data, cats), 'LOCAL')
             except (ReferenceError, RuntimeError, AttributeError):
                 pass
 
@@ -208,6 +238,7 @@ def _step():
 
 
 def refresh():
+    _catcache.update(t=0.0, lib=None, paths=[])
     _all.clear()
     _raw.clear()
     _gpu.clear()
@@ -267,8 +298,34 @@ def _libs():
     return ["ALL"] + labs
 
 
+_catcache = {"t": 0.0, "lib": None, "paths": []}
+
+
+def _catalog_paths():
+    """Catalogs of the shown library(ies) read from their catalog files, so
+    that empty catalogs also appear. Cached: this runs while drawing."""
+    now = time.time()
+    lib = _ui["lib"]
+    if _catcache["lib"] == lib and now - _catcache["t"] < 2.0:
+        return _catcache["paths"]
+    names = _writable_libs()
+    names = names if lib == "ALL" else [n for n in names if n == lib]
+    paths = set()
+    for n in names:
+        try:
+            paths.update(_cat_paths(n))
+        except (OSError, ReferenceError, RuntimeError):
+            pass
+    _catcache.update(t=now, lib=lib, paths=sorted(paths))
+    return _catcache["paths"]
+
+
 def _tree_rows():
     counts, total = {}, 0
+    for path in _catalog_paths():
+        parts = [p for p in path.split("/") if p]
+        for i in range(1, len(parts) + 1):
+            counts.setdefault("/".join(parts[:i]), 0)
     for a in _all:
         if not _match(a, folder=False):
             continue
@@ -371,6 +428,47 @@ def _pose_ready():
                 and bpy.context.mode == 'POSE')
 
 
+def _local_assets_count():
+    return sum(1 for a in bpy.data.actions if a.asset_data is not None)
+
+
+def _watch_new_pose():
+    """poselib saves the pose when its dialog is accepted, which we do not
+    see: poll for the new asset and refresh the browser."""
+    start = _local_assets_count()
+    left = [90]
+
+    def _tick():
+        left[0] -= 1
+        try:
+            if _local_assets_count() != start:
+                refresh()
+                return None
+        except (ReferenceError, RuntimeError):
+            return None
+        return 1.0 if left[0] > 0 else None
+    try:
+        bpy.app.timers.register(_tick, first_interval=1.0)
+    except (RuntimeError, ValueError):
+        pass
+
+
+def _prepare_new_pose(context):
+    """Create Pose Asset only keeps the selected bones and silently does
+    nothing when none is selected: in that case use every bone."""
+    from .anim_options import bone_selected, set_bone_selected
+    ob = context.active_object
+    if ob is None or ob.type != 'ARMATURE':
+        return
+    names = [b.name for b in ob.data.bones]
+    try:
+        if not any(bone_selected(ob, n) for n in names):
+            for n in names:
+                set_bone_selected(ob, n, True)
+    except (AttributeError, KeyError, RuntimeError):
+        pass
+
+
 def _foot_buttons(R):
     """[(key, label, rect, tip, enabled)] for the footer."""
     f = R["foot"]
@@ -382,9 +480,8 @@ def _foot_buttons(R):
                  "(or every bone)", ready),
                 ("flip", "Flip", "Apply the pose mirrored", ready),
                 ("blend", "Blend", "Blend the pose in with a slider", ready),
-                ("bones", "Bones", "Select the bones of this pose", ready),
                 ("new", "New", "Create a pose asset from the current pose "
-                 "(then press refresh)",
+                 "(selected bones, or all if none)",
                  requirements.enabled("pose_library") and _pose_ready()),
                 ("del", "Del", "Delete the selected asset", sel is not None)]
         n = len(keys)
@@ -514,12 +611,10 @@ def draw(context, w, h, mx, my):
                      size=12, color=COL_TXT)
     for key, label, rect, tip, en in _foot_buttons(R):
         hot = _in(rect, mx, my) and en
-        drawing.rect(*rect, panels.COL_HOVER if hot else panels.FILL_COL
-                     if en else panels.COL_BTN)
+        drawing.rect(*rect, panels.COL_HOVER if hot else panels.COL_BTN)
         drawing.text((rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2 - 6,
                      label, size=12 if not pose else 11,
-                     color=COL_TXT if en else panels.COL_TIP,
-                     align='CENTER')
+                     color=COL_TXT if en else COL_DIM, align='CENTER')
         if _in(rect, mx, my):
             panels.hover_tip = tip
 
@@ -582,10 +677,10 @@ def _foot_action(context, key):
                  use_blend=False)
     elif key == "blend":
         open_panel_deferred("NOMAD_PT_pose_blend")
-    elif key == "bones":
-        defer_op("nomad", "pose_select_bones", 'EXEC_DEFAULT')
     elif key == "new":
+        _prepare_new_pose(context)
         defer_op("poselib", "create_pose_asset", 'INVOKE_DEFAULT')
+        _watch_new_pose()
 
 
 def press(context, w, h, mx, my):
@@ -993,6 +1088,204 @@ class NOMAD_OT_asset_lib_remove(bpy.types.Operator):
         return {'FINISHED'}
 
 
+# ----------------------------------------------------------------------
+# Libraries and catalogs: shared by the asset browser, the pose library
+# and the brush popups
+# ----------------------------------------------------------------------
+
+_CATS = "blender_assets.cats.txt"
+_CATS_HEAD = (
+    "# This is an Asset Catalog Definition file for Blender.\n#\n"
+    "# Empty lines and lines starting with `#` will be ignored.\n"
+    "# The first non-ignored line should be the version indicator.\n"
+    "# Other lines are of the format "
+    "\"UUID:catalog/path/for/assets:simple catalog name\"\n\nVERSION 1\n\n")
+_keep = {}              # enum item lists must stay alive (Blender keeps refs)
+
+
+def _stable(tag, items):
+    _keep[tag] = items
+    return items
+
+
+def _lib_root(name):
+    if name == "Current File":
+        return Path(bpy.data.filepath).parent if bpy.data.filepath else None
+    lib = bpy.context.preferences.filepaths.asset_libraries.get(name)
+    return Path(bpy.path.abspath(lib.path)) if lib is not None else None
+
+
+def _writable_libs():
+    out = ["Current File"] if bpy.data.filepath else []
+    out += [lib.name for lib in bpy.context.preferences.filepaths.asset_libraries]
+    return out
+
+
+def _cat_entries(root):
+    """[(uuid, path)] from the library's catalog file."""
+    try:
+        lines = (root / _CATS).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+    out = []
+    for ln in lines:
+        ln = ln.strip()
+        if not ln or ln.startswith("#") or ln.startswith("VERSION"):
+            continue
+        parts = ln.split(":", 2)
+        if len(parts) == 3:
+            out.append((parts[0], parts[1]))
+    return out
+
+
+def _cat_paths(lib_name):
+    root = _lib_root(lib_name)
+    if root is None:
+        return []
+    return sorted({p for _u, p in _cat_entries(root)}, key=str.casefold)
+
+
+def _catlib_items(self, context):
+    names = _writable_libs()
+    return _stable("catlib", [(n, n, "") for n in names]
+                   or [("NONE", "Save the file first", "")])
+
+
+def _catparent_items(self, context):
+    items = [("/", "(Top level)", "Create it at the top level")]
+    for p in _cat_paths(context.window_manager.nomad_newcat_lib):
+        items.append((p, p, ""))
+    return _stable("catparent", items)
+
+
+def _delcat_items(self, context):
+    paths = _cat_paths(context.window_manager.nomad_newcat_lib)
+    return _stable("delcat", [(p, p, "") for p in paths]
+                   or [("NONE", "No catalogs in this library", "")])
+
+
+class NOMAD_OT_asset_cat_new(bpy.types.Operator):
+    bl_idname = "nomad.asset_cat_new"
+    bl_label = "Create Catalog"
+    bl_description = "Create an asset catalog (folder) in the chosen library"
+    bl_options = {'INTERNAL'}
+
+    def execute(self, context):
+        wm = context.window_manager
+        root = _lib_root(wm.nomad_newcat_lib)
+        name = wm.nomad_newcat_name.strip().strip("/").replace(":", "-")
+        if root is None or not name:
+            self.report({'WARNING'}, "Choose a library and give the "
+                                     "catalog a name")
+            return {'CANCELLED'}
+        parent = wm.nomad_newcat_parent
+        path = name if parent in ("/", "") else f"{parent}/{name}"
+        if path in {p for _u, p in _cat_entries(root)}:
+            self.report({'INFO'}, f"'{path}' already exists")
+            return {'CANCELLED'}
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            f = root / _CATS
+            fresh = not f.exists()
+            with open(f, "a", encoding="utf-8") as fh:
+                if fresh:
+                    fh.write(_CATS_HEAD)
+                fh.write(f"{uuid.uuid4()}:{path}:{path.replace('/', '-')}\n")
+        except OSError as exc:
+            self.report({'ERROR'}, f"Could not write the catalog: {exc}")
+            return {'CANCELLED'}
+        try:
+            bpy.ops.asset.library_refresh()
+        except (RuntimeError, AttributeError):
+            pass
+        wm.nomad_newcat_name = ""
+        refresh()
+        self.report({'INFO'}, f"Catalog '{path}' created")
+        return {'FINISHED'}
+
+
+class NOMAD_OT_asset_cat_delete(bpy.types.Operator):
+    bl_idname = "nomad.asset_cat_delete"
+    bl_label = "Delete Catalog"
+    bl_description = ("Delete the catalog and its sub-catalogs (the assets "
+                      "stay, they just become unassigned)")
+    bl_options = {'INTERNAL'}
+
+    def execute(self, context):
+        wm = context.window_manager
+        root = _lib_root(wm.nomad_newcat_lib)
+        path = wm.nomad_delcat
+        if root is None or path in ("", "NONE"):
+            return {'CANCELLED'}
+        f = root / _CATS
+        try:
+            lines = f.read_text(encoding="utf-8").splitlines()
+            keep = []
+            for ln in lines:
+                parts = ln.strip().split(":", 2)
+                p = parts[1] if len(parts) == 3 and not ln.startswith("#") else None
+                if p is not None and (p == path or p.startswith(path + "/")):
+                    continue
+                keep.append(ln)
+            f.write_text("\n".join(keep) + "\n", encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            self.report({'ERROR'}, f"Could not edit the catalogs: {exc}")
+            return {'CANCELLED'}
+        try:
+            bpy.ops.asset.library_refresh()
+        except (RuntimeError, AttributeError):
+            pass
+        refresh()
+        self.report({'INFO'}, f"Catalog '{path}' deleted")
+        return {'FINISHED'}
+
+
+def _section(layout, idname, text):
+    """A collapsible dropdown (Blender 4.2+); a flat block as fallback."""
+    if hasattr(layout, "panel"):
+        header, body = layout.panel(idname, default_closed=True)
+        header.label(text=text)
+        return body
+    layout.label(text=text)
+    return layout
+
+
+def draw_manage(l, context):
+    """New Library / Catalogs dropdowns. Used by the library popup of the
+    asset browser and the pose library, and by the brush popup."""
+    wm = context.window_manager
+    body = _section(l, "nomad_man_lib", "New Library")
+    if body is not None:
+        body.prop(wm, "nomad_newlib_name", text="Name")
+        body.prop(wm, "nomad_newlib_dir", text="Folder")
+        row = body.row()
+        row.scale_y = 1.3
+        row.operator("nomad.asset_lib_new", text="Create Library",
+                     icon='ADD')
+        user = list(context.preferences.filepaths.asset_libraries)
+        if user:
+            body.label(text="Delete library (files stay on disk)")
+            col = body.column(align=True)
+            for lib in user:
+                op = col.operator("nomad.asset_lib_remove", text=lib.name,
+                                  icon='TRASH')
+                op.name = lib.name
+    body = _section(l, "nomad_man_cat", "Catalogs")
+    if body is not None:
+        body.prop(wm, "nomad_newcat_lib", text="Library")
+        body.prop(wm, "nomad_newcat_parent", text="Folder")
+        body.prop(wm, "nomad_newcat_name", text="Name")
+        row = body.row()
+        row.scale_y = 1.3
+        row.operator("nomad.asset_cat_new", text="Create Catalog", icon='ADD')
+        body.separator()
+        body.prop(wm, "nomad_delcat", text="")
+        row = body.row()
+        row.scale_y = 1.3
+        row.operator("nomad.asset_cat_delete", text="Delete Catalog",
+                     icon='TRASH')
+
+
 class NOMAD_PT_asset_libs(bpy.types.Panel):
     bl_label = "Libraries"
     bl_idname = "NOMAD_PT_asset_libs"
@@ -1016,28 +1309,13 @@ class NOMAD_PT_asset_libs(bpy.types.Panel):
             op.lib = lib
 
         l.separator()
-        l.label(text="New library")
-        l.prop(wm, "nomad_newlib_name", text="Name")
-        l.prop(wm, "nomad_newlib_dir", text="Folder")
-        row = l.row()
-        row.scale_y = 1.4
-        row.operator("nomad.asset_lib_new", text="Create Library",
-                     icon='ADD')
-
-        user = list(context.preferences.filepaths.asset_libraries)
-        if user:
-            l.separator()
-            l.label(text="Remove library (files stay on disk)")
-            col = l.column(align=True)
-            for lib in user:
-                op = col.operator("nomad.asset_lib_remove", text=lib.name,
-                                  icon='X')
-                op.name = lib.name
+        draw_manage(l, context)
 
 
 CLASSES = (NOMAD_OT_asset_delete, NOMAD_PT_asset_delete,
            NOMAD_OT_asset_lib_select, NOMAD_OT_asset_lib_new,
-           NOMAD_OT_asset_lib_remove, NOMAD_PT_asset_libs)
+           NOMAD_OT_asset_lib_remove, NOMAD_OT_asset_cat_new,
+           NOMAD_OT_asset_cat_delete, NOMAD_PT_asset_libs)
 
 
 def register():
@@ -1047,6 +1325,14 @@ def register():
     wm.nomad_newlib_dir = bpy.props.StringProperty(
         name="Folder", default="", subtype='DIR_PATH',
         options={'SKIP_SAVE'})
+    wm.nomad_newcat_name = bpy.props.StringProperty(
+        name="Name", default="", options={'SKIP_SAVE'})
+    wm.nomad_newcat_lib = bpy.props.EnumProperty(
+        name="Library", items=_catlib_items, options={'SKIP_SAVE'})
+    wm.nomad_newcat_parent = bpy.props.EnumProperty(
+        name="Folder", items=_catparent_items, options={'SKIP_SAVE'})
+    wm.nomad_delcat = bpy.props.EnumProperty(
+        name="Catalog", items=_delcat_items, options={'SKIP_SAVE'})
     for cls in CLASSES:
         bpy.utils.register_class(cls)
 
@@ -1060,6 +1346,8 @@ def unregister():
             bpy.utils.unregister_class(cls)
         except RuntimeError:
             pass
-    for name in ("nomad_newlib_name", "nomad_newlib_dir"):
+    for name in ("nomad_newlib_name", "nomad_newlib_dir",
+                 "nomad_newcat_name", "nomad_newcat_lib",
+                 "nomad_newcat_parent", "nomad_delcat"):
         if hasattr(bpy.types.WindowManager, name):
             delattr(bpy.types.WindowManager, name)

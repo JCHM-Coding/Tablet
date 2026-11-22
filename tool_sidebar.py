@@ -711,9 +711,9 @@ def draw(context, w, h, mx, my):
                 glyph = ag[0][2]
                 tip = f"Mesh tools: {ag[0][3][ag[1]]['label']}"
         inside = x1 <= mx <= x2 and y1 <= my <= y2
-        col = (panels.COL_HOVER if inside
-               else COL_ACTIVE if on else panels.COL_BTN)
-        drawing.rect(x1 + 2, y1 + 2, x2 - 2, y2 - 2, col)
+        if inside or on:                 # at rest only the capsule shows
+            drawing.rrect(x1 + 2, y1 + 2, x2 - 2, y2 - 2, drawing.BEVEL,
+                          panels.COL_SIDE_ON)
         drawing.text(x1 + panels.BTN / 2, (y1 + y2) / 2 - 9, glyph,
                      size=18, color=panels.COL_GLYPH, align='CENTER')
         if inside:

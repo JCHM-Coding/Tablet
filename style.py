@@ -15,11 +15,11 @@ COL_TL_CTRL = (0.07, 0.07, 0.08, 1.0)
 COL_FIELD = (0.16, 0.16, 0.18, 1.0)
 COL_BTN_IDLE = (0.16, 0.16, 0.18, 1.0)
 COL_ARROW_OFF = (0.4, 0.4, 0.44, 1.0)
-RADIUS = 8
+RADIUS = 10
 GROUP_SIZE = 4
-STEP = 40         # side-bar button pitch (BTN + PAD)
-ARROW_H = 24
-EDGE = 6            # clearance between the bars and the rest of the UI
+STEP = 43            # side-bar button pitch (BTN + PAD = 40 + 3)
+ARROW_H = 26
+EDGE = 10            # clearance between the bars and the rest of the UI
 
 _bar = {"L": 0, "R": 0}      # scroll of each side column, in steps
 _info = {}                    # side -> geometry of an overflowing column
@@ -134,9 +134,19 @@ def _stack_top(context):
     return panels._bottom_base(context) + panels.BOT_H + EDGE
 
 
+def _side_floor(context):
+    """Lowest point of the side columns. They sit at the screen edges, where
+    the centered Undo/Redo pill and a bottom favorites strip never reach, so
+    they go down to the bottom of the screen; only the timeline, which spans
+    the whole width, stops them."""
+    from . import panels, top_bar
+    th = top_bar.timeline_height(context)
+    return ((th + 8) if th else panels.MARGIN) + EDGE
+
+
 def _y_limits(context, h):
     from . import top_bar
-    return _stack_top(context), h - top_bar.BAR_H - EDGE
+    return _side_floor(context), h - top_bar.BAR_H - EDGE
 
 
 # ----------------------------------------------------------------------
@@ -342,7 +352,7 @@ def draw_groups(context, w, h):
         pass
     group += [tuple(b[:4]) for b in direction]
     if group:
-        pill(*_bbox(group, 1))
+        pill(*_bbox(group, 1), COL_PILL_DARK)
 
     # the rest of each column, in groups of GROUP_SIZE
     btns = [tuple(b[:4]) for b in side if b not in direction]
@@ -356,17 +366,17 @@ def draw_groups(context, w, h):
     for col in cols.values():
         col.sort(key=lambda r: -r[3])                  # top to bottom
         for i in range(0, len(col), GROUP_SIZE):
-            pill(*_bbox(col[i:i + GROUP_SIZE], 1))
+            pill(*_bbox(col[i:i + GROUP_SIZE], 1), COL_PILL_DARK)
 
     # scroll arrows of the overflowing columns
     mx, my = panels.mouse
     for side_key, info in bar_arrows(context, w, h).items():
         x1, x2, y_lo, lo_eff, kmax = info
-        pill(x1 - 2, y_lo, x2 + 2, y_lo + ARROW_H + 4)
+        pill(x1 - 2, y_lo, x2 + 2, y_lo + ARROW_H + 4, COL_PILL_DARK)
         for rc, g, can in zip(_arrow_rects(info), ("▲", "▼"),
                               (_bar[side_key] > 0, _bar[side_key] < kmax)):
-            drawing.rrect(*rc, 6, panels.COL_HOVER
-                          if can and _in(rc, mx, my) else COL_BTN_IDLE)
+            if can and _in(rc, mx, my):
+                drawing.rrect(*rc, 6, panels.COL_SIDE_ON)
             drawing.glyph((rc[0] + rc[2]) / 2, (rc[1] + rc[3]) / 2, g, 11,
                           panels.COL_GLYPH if can else COL_ARROW_OFF)
 
@@ -375,7 +385,7 @@ def draw_groups(context, w, h):
         try:
             from . import nav_gizmo
             for rects in nav_gizmo.groups(context, w, h):
-                pill(*_bbox(rects, 1))
+                pill(*_bbox(rects, 7), COL_PILL_DARK)   # outer border
         except Exception:
             pass
 
@@ -557,13 +567,3 @@ def _wrap_icons(fn, kind):
         return res
     wrapped._nomad_icons = True
     return wrapped
-
-def ui_scale():
-    """Preferences > Interface > Resolution Scale * Custom Tablet Scale."""
-    try:
-        base = max(0.5, float(bpy.context.preferences.view.ui_scale))
-        addon_prefs = bpy.context.preferences.addons[__package__].preferences
-        custom = getattr(addon_prefs, "custom_scale", 1.0)
-        return base * custom
-    except Exception:
-        return 1.0

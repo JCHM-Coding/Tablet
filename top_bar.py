@@ -171,10 +171,6 @@ def _view(op, area):
     open_panel_deferred("NOMAD_PT_view")
 
 
-def _camera_settings(op, area):
-    op.report({'INFO'}, "Cámara: placeholder (próximamente)")
-
-
 def _mode_selector(op, area):
     from .sculpt_popups import open_menu_deferred
     open_menu_deferred("NOMAD_MT_modes")
@@ -246,8 +242,10 @@ def _options(op, area):
     open_panel_deferred("NOMAD_PT_options")
 
 def _operators(op, area):
-    from .sculpt_popups import open_panel_deferred
-    open_panel_deferred("NOMAD_PT_edit_operators")
+    from .sculpt_popups import open_menu_deferred
+    # a menu closes when an item is activated: the next press reaches the
+    # viewport, where the armed operator starts (see edit_ops.py)
+    open_menu_deferred("NOMAD_MT_edit_operators")
 
 
 def _uv_menu(op, area):
@@ -374,12 +372,11 @@ LEFT = [
     ("≣", "Outliner", _outliner),
     ("⊞", "Modifiers", _modifiers),
     ("⛓", "Constraints / Shape Keys", _constraints),
-    ("◈", "Material", _material),
     ("▶", "Render", _render),
     ("◫", "View", _view),
 ]
-CAMERA_BTN = ("◎", "Cámara", _camera_settings)
 
+RIGHT_MATERIAL = ("◈", "Material", _material)
 RIGHT_TOOL = ("⚒", "Tool (opciones)", _tool_options)
 RIGHT_ADD = ("✚", "Add", _add_menu)
 RIGHT_OBJECT = ("❒", "Object", _object_menu)
@@ -499,6 +496,11 @@ def _right_buttons(context):
            if b not in (RIGHT_SETTINGS, RIGHT_EXIT)]
     if not requirements.enabled("pose_library"):
         out = [b for b in out if b is not RIGHT_POSELIB]
+    if _supports_materials(context):       # only for objects with materials
+        at = len(out)
+        if out and out[-1] in (RIGHT_OPTIONS, RIGHT_OPTIONS_C):
+            at -= 1                        # Options stays the last one
+        out.insert(at, RIGHT_MATERIAL)
     return out
             
             
@@ -513,11 +515,6 @@ def _supports_materials(context):
 def _top_groups(width, context):
     y1, y2 = MARGIN, BAR_H - MARGIN
     left = list(LEFT)
-    if not _supports_materials(context):
-        left = [b for b in left if b[1] != "Material"]
-    obj = context.active_object
-    if obj is not None and obj.type == 'CAMERA':
-        left.append(CAMERA_BTN)
 
     L, x = [], MARGIN + 10
     for g, tip, cb in left:
@@ -540,6 +537,64 @@ def build(width, context):
     return L + R + M
 
 
+# When the three pills (left tools, mode, right tools) get closer than this
+# they become one single row that scrolls horizontally by dragging it.
+GAP_MIN = 28
+DRAG_PX = 6
+_bar = {"off": 0.0, "max": 0.0, "mx0": 0.0, "off0": 0.0, "moved": 0.0,
+        "hit": None, "op": None, "area": None}
+
+
+def _merge_needed(L, M, R):
+    groups = [g for g in (L, M, R) if g]
+    return any(min(b[0] for b in nxt) - max(b[2] for b in prev) < GAP_MIN
+               for prev, nxt in zip(groups, groups[1:]))
+
+
+def _merged(width, L, M, R):
+    """One row: left tools, mode, right tools, shifted by the scroll."""
+    items = (sorted(L, key=lambda b: b[0]) + list(M)
+             + sorted(R, key=lambda b: b[0]))
+    x_lo, x_hi = MARGIN + 10, width - 26      # keeps Blender's corner free
+    content = sum(b[2] - b[0] for b in items) + PAD * (len(items) - 1)
+    _bar["max"] = max(0.0, content - (x_hi - x_lo))
+    _bar["off"] = max(0.0, min(_bar["off"], _bar["max"]))
+    out, x = [], x_lo - _bar["off"]
+    for x1, y1, x2, y2, tip, cb, glyph in items:
+        out.append((x, y1, x + (x2 - x1), y2, tip, cb, glyph))
+        x += (x2 - x1) + PAD
+    if _bar["max"] > 0:                       # only what fits in the pill
+        out = [b for b in out if b[0] >= x_lo - 1 and b[2] <= x_hi + 1]
+    return out, x_lo - 8, x_hi + 8
+
+
+def _layout(width, context):
+    """([(buttons, pill_x1, pill_x2)], scrollable)."""
+    L, M, R = _top_groups(width, context)
+    if _merge_needed(L, M, R):
+        g, xa, xb = _merged(width, L, M, R)
+        return [(g, xa, xb)], _bar["max"] > 0
+    _bar["off"] = _bar["max"] = 0.0
+    return [(g, min(b[0] for b in g) - 8, max(b[2] for b in g) + 8)
+            for g in (L, M, R) if g], False
+
+
+def _bar_drag(mx):
+    dx = _bar["mx0"] - mx
+    _bar["moved"] = max(_bar["moved"], abs(dx))
+    if _bar["moved"] > DRAG_PX:
+        _bar["off"] = max(0.0, min(_bar["off0"] + dx, _bar["max"]))
+
+
+def _bar_release():
+    hit, op, area = _bar["hit"], _bar["op"], _bar["area"]
+    tap = _bar["moved"] <= DRAG_PX
+    _bar.update(hit=None, op=None, area=None, moved=0.0)
+    if tap and hit is not None and op is not None:
+        print(f"NomadUI: botón '{hit[4]}'")
+        hit[5](op, area)
+
+
 # --- Dibujo --------------------------------------------------------------
 def draw():
     context = bpy.context
@@ -554,11 +609,7 @@ def draw():
 
     drawing.begin_2d()
     hover_tip = None
-    for group in _top_groups(w, context):
-        if not group:
-            continue
-        xa = min(b[0] for b in group) - 8
-        xb = max(b[2] for b in group) + 8
+    for group, xa, xb in _layout(w, context)[0]:
         style.pill(xa, h - (BAR_H - MARGIN) - 5, xb, h - MARGIN + 5,
                    style.COL_PILL_DARK)
         for x1, y1, x2, y2, tip, cb, glyph in group:
@@ -587,16 +638,25 @@ def handle_click(area, mx, my, op):
     if scrub_click(area, mx, my, op):
         return True
 
-    for group in _top_groups(w, context):
+    global drag_state
+    layout, scrollable = _layout(w, context)
+    for group, xa, xb in layout:
+        in_pill = xa <= mx <= xb and h - (BAR_H - MARGIN) - 5 <= my <= h
+        if scrollable and in_pill:
+            # drag the row to scroll it; a tap (no drag) is the click
+            hit = next((b for b in group if b[0] <= mx <= b[2]
+                        and h - b[3] - 5 <= my <= h - b[1] + 5), None)
+            _bar.update(op=op, area=area, mx0=mx, off0=_bar["off"],
+                        moved=0.0, hit=hit)
+            drag_state = ('bar', 0, mx)
+            return True
         for x1, y1, x2, y2, tip, cb, glyph in group:
             by1, by2 = h - y2 - 5, h - y1 + 5
             if x1 <= mx <= x2 and by1 <= my <= by2:
                 print(f"NomadUI: botón '{tip}' @ ({mx:.0f}, {my:.0f})")
                 cb(op, area)
                 return True
-        xa = min(b[0] for b in group) - 8
-        xb = max(b[2] for b in group) + 8
-        if xa <= mx <= xb and h - (BAR_H - MARGIN) - 5 <= my <= h:
+        if in_pill:
             return True                 # on a group, between buttons
     return False                        # gaps pass through to the viewport
 
@@ -623,6 +683,10 @@ def scrub_drag(area, mx, my):
     if drag_state is None:
         return
     kind, val0, mx0 = drag_state
+    if kind == 'bar':
+        _bar_drag(mx)
+        area.tag_redraw()
+        return
     sc = bpy.context.scene
     w = style.region_size(
         next(r for r in area.regions if r.type == 'WINDOW'))[0]
@@ -654,7 +718,9 @@ def scrub_release():
     global drag_state
     st = drag_state
     drag_state = None
-    if st is not None and st[0] == 'tlx':
+    if st is not None and st[0] == 'bar':
+        _bar_release()
+    elif st is not None and st[0] == 'tlx':
         from . import timeline_ext
         timeline_ext.release(bpy.context)
     elif (st is not None and st[0] in ('cur', 'start', 'end')

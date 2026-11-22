@@ -36,7 +36,7 @@ MODE_LABEL = {'TIMELINE': "Timeline", 'DOPESHEET': "Dope Sheet",
               'GRAPH': "Graph Editor", 'NLA': "NLA", 'DRIVERS': "Drivers"}
 DS_MODE_LABEL = {'DOPESHEET': "Dope Sheet", 'ACTION': "Action Editor",
                  'SHAPEKEY': "Shape Key Editor", 'GPENCIL': "Grease Pencil",
-                 'MASK': "Mask", 'CACHE': "Cache File"}
+                 'MASK': "Mask (Movie Clip Editor)", 'CACHE': "Cache File"}
 _SOON = {}
 
 COL_ROW_A = (0.17, 0.17, 0.20, 1.0)
@@ -72,7 +72,8 @@ _BONE_PREFIX = 'pose.bones["'
 SHARED_KEYS = ("search", "sfield", "filter")
 
 # Dope Sheet menu buttons -> popup panel
-_DS_PANELS = {"mode": "NOMAD_PT_ds_mode", "view": "NOMAD_PT_ds_view",
+_DS_PANELS = {"action": "NOMAD_PT_ds_action", "slot": "NOMAD_PT_ds_slot",
+              "side": "NOMAD_PT_ds_side", "mode": "NOMAD_PT_ds_mode", "view": "NOMAD_PT_ds_view",
               "select": "NOMAD_PT_gr_select", "marker": "NOMAD_PT_gr_marker",
               "channel": "NOMAD_PT_gr_channel", "key": "NOMAD_PT_ds_key",
               "filters": "NOMAD_PT_gr_filters",
@@ -178,6 +179,9 @@ def ext_module(context):
     if m == 'DRIVERS':
         from . import driver_ext
         return driver_ext
+    if m == 'DOPESHEET' and _ds_mode(context) == 'GPENCIL':
+        from . import dope_gp
+        return dope_gp
     return None
 
 
@@ -263,6 +267,12 @@ _PROPS = ("nomad_tl_mode", "nomad_tl_search_on", "nomad_tl_search",
           "nomad_tl_f_rot", "nomad_tl_f_scale")
 
 
+_DS_PROPS = ("nomad_ds_mode", "nomad_ds_snap", "nomad_ds_snap_mode",
+             "nomad_ds_prop", "nomad_ds_prop_size", "nomad_ds_falloff",
+             "nomad_ds_pivot", "nomad_ds_overlays", "nomad_ds_ov_range",
+             "nomad_ds_ov_seconds", "nomad_ds_ov_markers")
+
+
 def register():
     S = bpy.types.Scene
     S.nomad_tl_mode = bpy.props.EnumProperty(
@@ -285,6 +295,50 @@ def register():
     S.nomad_tl_f_rot = bpy.props.BoolProperty(default=True, update=_changed)
     S.nomad_tl_f_scale = bpy.props.BoolProperty(default=True,
                                                 update=_changed)
+    # Dope Sheet properties live here, so the rows work with or without the
+    # menus (ds_panels.py)
+    S.nomad_ds_mode = bpy.props.EnumProperty(
+        name="Mode", default='DOPESHEET', update=_changed,
+        items=[('DOPESHEET', "Dope Sheet", "Keyframes of objects and bones"),
+               ('ACTION', "Action Editor",
+                "Every channel of the active object's action"),
+               ('SHAPEKEY', "Shape Key Editor",
+                "Animation of the shape keys"),
+               ('GPENCIL', "Grease Pencil",
+                "Grease Pencil layers and frames"),
+               ('MASK', "Mask (Movie Clip Editor)",
+                "Masks belong to the Movie Clip Editor"),
+               ('CACHE', "Cache File", "Animation of the cache files")])
+    S.nomad_ds_snap = bpy.props.BoolProperty(name="Snap", default=True)
+    S.nomad_ds_snap_mode = bpy.props.EnumProperty(
+        name="Snap To", default='FRAME',
+        items=[('FRAME', "Frame", "Whole frames"),
+               ('SECOND', "Second", "Whole seconds"),
+               ('MARKER', "Nearest Marker", "The nearest marker")])
+    S.nomad_ds_prop = bpy.props.BoolProperty(name="Proportional Editing",
+                                             default=False)
+    S.nomad_ds_prop_size = bpy.props.FloatProperty(
+        name="Radius", default=10.0, min=0.5, soft_max=100.0)
+    S.nomad_ds_falloff = bpy.props.EnumProperty(
+        name="Falloff", default='SMOOTH',
+        items=[('SMOOTH', "Smooth", ""), ('SPHERE', "Sphere", ""),
+               ('ROOT', "Root", ""), ('SHARP', "Sharp", ""),
+               ('LINEAR', "Linear", ""), ('CONSTANT', "Constant", "")])
+    S.nomad_ds_pivot = bpy.props.EnumProperty(
+        name="Pivot", default='CURRENT_FRAME',
+        items=[('CURRENT_FRAME', "Current Frame", "Scale around the frame"),
+               ('BOUNDING_BOX_CENTER', "Bounding Box Center",
+                "Scale around the middle of the selection"),
+               ('INDIVIDUAL_CENTERS', "Individual Centers",
+                "Scale every curve around its own selection")])
+    S.nomad_ds_overlays = bpy.props.BoolProperty(name="Overlays",
+                                                 default=True)
+    S.nomad_ds_ov_range = bpy.props.BoolProperty(name="Frame Range",
+                                                 default=True)
+    S.nomad_ds_ov_seconds = bpy.props.BoolProperty(name="Show Seconds",
+                                                   default=False)
+    S.nomad_ds_ov_markers = bpy.props.BoolProperty(name="Markers",
+                                                   default=True)
     for cls in CLASSES:
         bpy.utils.register_class(cls)
     h = bpy.app.handlers
@@ -307,7 +361,7 @@ def unregister():
             bpy.utils.unregister_class(cls)
         except RuntimeError:
             pass
-    for name in _PROPS:
+    for name in tuple(_PROPS) + _DS_PROPS:
         if hasattr(bpy.types.Scene, name):
             delattr(bpy.types.Scene, name)
 
@@ -342,6 +396,10 @@ def _type_of(fc):
 
 def _label(fc):
     dp = fc.data_path
+    if dp.startswith('key_blocks["'):                 # shape key value
+        name = dp[len('key_blocks["'):].split('"]', 1)[0]
+        tail = dp.rsplit(".", 1)[-1]
+        return name if tail == "value" else f"{name} ({tail})"
     base = _prop_of(fc)
     idx = fc.array_index
     if base in _PROP:
@@ -387,6 +445,108 @@ def transform_curves(obj, filtered=True):
     return out
 
 
+def _ds_mode(context):
+    """What the Dope Sheet shows. The Graph Editor always uses the objects."""
+    if not dope_on(context):
+        return 'DOPESHEET'
+    return getattr(context.scene, "nomad_ds_mode", 'DOPESHEET')
+
+
+def _active_key(context):
+    """The shape keys (Key datablock) of the active object."""
+    ob = context.active_object
+    data = getattr(ob, "data", None)
+    return getattr(data, "shape_keys", None)
+
+
+def id_curves(idb):
+    """Every F-curve of the action (and slot) assigned to a datablock."""
+    ad = getattr(idb, "animation_data", None)
+    act = getattr(ad, "action", None)
+    if act is None:
+        return []
+    try:
+        return list(act.fcurves)                       # Blender < 5.0
+    except AttributeError:
+        pass
+    slot = getattr(ad, "action_slot", None)
+    out = []
+    for layer in act.layers:
+        for strip in layer.strips:
+            if strip.type != 'KEYFRAME':
+                continue
+            if slot is not None:
+                cb = strip.channelbag(slot)
+                if cb is not None:
+                    out.extend(cb.fcurves)
+            else:
+                for cb in strip.channelbags:
+                    out.extend(cb.fcurves)
+    return out
+
+
+def _filter_curves(owner, curves, filtered):
+    """Search / type / selected-bone filters for any kind of F-curve."""
+    sc = bpy.context.scene
+    bones_only = getattr(sc, "nomad_tl_f_bones", True)
+    allowed = set()
+    if getattr(sc, "nomad_tl_f_loc", True):
+        allowed.add('LOC')
+    if getattr(sc, "nomad_tl_f_rot", True):
+        allowed.add('ROT')
+    if getattr(sc, "nomad_tl_f_scale", True):
+        allowed.add('SCALE')
+    words = []
+    if filtered and getattr(sc, "nomad_tl_search_on", False):
+        words = sc.nomad_tl_search.strip().lower().split()
+    out = []
+    for fc in curves:
+        b = _bone_of(fc)
+        if (bones_only and b is not None and owner.id_type == 'OBJECT'
+                and not _bone_ok(owner, fc)):
+            continue
+        if filtered:
+            if _is_transform(fc) and _type_of(fc) not in allowed:
+                continue
+            if words:
+                name = f"{owner.name} {b or ''} {_label(fc)}".lower()
+                if not all(t in name for t in words):
+                    continue
+        out.append(fc)
+    return out
+
+
+def _owners(context, filtered=True):
+    """[(owner, [fcurves])] for what the Dope Sheet shows: object and bone
+    transforms, the whole action of the active object (Action Editor), the
+    shape keys, or the cache files."""
+    mode = _ds_mode(context)
+    if mode == 'ACTION':
+        ob = context.active_object
+        if ob is None:
+            return []
+        return [(ob, _filter_curves(ob, id_curves(ob), filtered))]
+    if mode == 'SHAPEKEY':
+        key = _active_key(context)
+        if key is None:
+            return []
+        return [(key, _filter_curves(key, id_curves(key), filtered))]
+    if mode == 'CACHE':
+        return [(cf, _filter_curves(cf, id_curves(cf), filtered))
+                for cf in bpy.data.cache_files
+                if getattr(cf, "animation_data", None)]
+    return [(o, transform_curves(o, filtered)) for o in _objects(context)]
+
+
+def _owner_label(context, owner):
+    """Action name for the action based modes, the object otherwise."""
+    if _ds_mode(context) in ('ACTION', 'SHAPEKEY'):
+        ad = getattr(owner, "animation_data", None)
+        if ad is not None and ad.action is not None:
+            return ad.action.name
+    return owner.name
+
+
 def _objects(context):
     sc = context.scene
     if getattr(sc, "nomad_tl_f_sel", True):
@@ -418,11 +578,11 @@ def fresh_items(context, filtered=True):
     for every edit."""
     sc = context.scene
     out = []
-    for obj in _objects(context):
-        for fc in transform_curves(obj, filtered):
+    for owner, curves in _owners(context, filtered):
+        for fc in curves:
             if filtered and not _shown(sc, fc):
                 continue
-            out.append((_fk(obj, fc), fc))
+            out.append((_fk(owner, fc), fc))
     return out
 
 
@@ -501,8 +661,8 @@ def _diag(context):
 def _build_rows(context):
     sc = context.scene
     rows, per_obj = [], []
-    for obj in _objects(context):
-        fcs = [fc for fc in transform_curves(obj) if _shown(sc, fc)]
+    for obj, curves in _owners(context):
+        fcs = [fc for fc in curves if _shown(sc, fc)]
         if fcs:
             per_obj.append((obj, fcs))
     if not per_obj:
@@ -526,7 +686,8 @@ def _build_rows(context):
     for obj, fcs in per_obj:
         okey = "o:" + obj.name
         ofold = okey in _fold
-        rows.append({"kind": "obj", "key": okey, "label": obj.name,
+        rows.append({"kind": "obj", "key": okey,
+                     "label": _owner_label(context, obj),
                      "level": 1, "fold": ofold, "fcs": fcs,
                      "fks": [_fk(obj, fc) for fc in fcs]})
         if ofold:
@@ -754,20 +915,69 @@ def _place(rect, specs, left):
     return out
 
 
+def _target_id(context):
+    """Datablock whose action the Action / Shape Key editors browse."""
+    if _ds_mode(context) == 'SHAPEKEY':
+        return _active_key(context)
+    return context.active_object
+
+
+def _action_label(context):
+    idb = _target_id(context)
+    ad = getattr(idb, "animation_data", None)
+    act = getattr(ad, "action", None)
+    return (act.name if act is not None else "No Action")[:16]
+
+
+def _slot_label(context):
+    idb = _target_id(context)
+    ad = getattr(idb, "animation_data", None)
+    slot = getattr(ad, "action_slot", None)
+    return (slot.name_display if slot is not None else "No Slot")[:12]
+
+
 def _dope_items(context, G):
     sc = context.scene
-    ds = _sp("nomad_ds_mode", 'DOPESHEET')
+    ds = _ds_mode(context)
     r0 = G["rows"][0]
     mode_item = ("mode", DS_MODE_LABEL.get(ds, "Dope Sheet"), 'menu',
                  "Dope Sheet mode")
-    if ds != 'DOPESHEET':
+    if ds == 'MASK':                              # Movie Clip Editor
         return _place(r0, [mode_item], True)
+    if ds == 'GPENCIL':
+        left = [mode_item,
+                ("view", "View", 'menu', "View options"),
+                ("select", "Select", 'menu', "Select keyframes"),
+                ("channel", "Channel", 'menu', "Layers"),
+                ("marker", "Marker", 'menu', "Markers"),
+                ("key", "Key", 'menu', "Keyframes"),
+                None,
+                ("gp_add", "+ Layer", 'btn', "Add a new layer"),
+                ("gp_del", "- Layer", 'btn', "Remove the active layer"),
+                ("gp_extra", "Extra", 'menu', "More layer operations"),
+                ("gp_up", "Up", 'btn', "Move the layer up"),
+                ("gp_down", "Down", 'btn', "Move the layer down"),
+                ("gp_iso", "Isolate", 'btn',
+                 "Show only the active layer (tap again to restore)"),
+                ("layer", "Layer", 'menu', "Layer properties")]
+        right = [("filters", "Filters", 'menu',
+                  "Filters (objects, bones, channel types)")]
+        return _place(r0, left, True) + _place(r0, right, False)
     left = [mode_item,
             ("view", "View", 'menu', "View options"),
             ("select", "Select", 'menu', "Select keyframes"),
-            ("marker", "Marker", 'menu', "Markers"),
-            ("channel", "Channel", 'menu', "Channels"),
-            ("key", "Key", 'menu', "Keyframes")]
+            ("marker", "Marker", 'menu', "Markers")]
+    if ds == 'DOPESHEET':
+        left.append(("channel", "Channel", 'menu', "Channels"))
+    left.append(("key", "Key", 'menu', "Keyframes"))
+    if ds in ('ACTION', 'SHAPEKEY'):
+        left += [("action", _action_label(context), 'menu',
+                  "Action browser"),
+                 ("slot", _slot_label(context), 'menu',
+                  "Slot of the action")]
+    if ds != 'DOPESHEET':
+        left.append(("side", "Panel", 'menu',
+                     "Properties that the sidebar shows in this mode"))
     right = [("search", "Search", 'toggle', "Search channels by name")]
     if sc.nomad_tl_search_on:
         right.append(("sfield", (sc.nomad_tl_search
@@ -788,6 +998,9 @@ def _dope_is_on(context, key):
     sc = context.scene
     if key in ("box", "scale", "dup"):
         return _tool[key]
+    if key == "gp_iso":
+        from . import dope_gp
+        return dope_gp.isolated(context)
     if key == "snap":
         return bool(_sp("nomad_ds_snap", True))
     if key == "prop":
@@ -879,6 +1092,10 @@ def _tb_action(context, key, w):
     """Actions of the Dope Sheet rows."""
     from .sculpt_popups import open_panel_deferred
     sc = context.scene
+    if _ds_mode(context) == 'GPENCIL':
+        from . import dope_gp
+        if dope_gp.action(context, key, w):
+            return
     if key in _DS_PANELS:
         open_panel_deferred(_DS_PANELS[key])
         return
@@ -948,8 +1165,8 @@ def draw(context, w, mx, my):
     kx1, ky1, kx2, ky2 = G["keys"]
     hd, rl = G["head"], G["ruler"]
 
-    ds = _sp("nomad_ds_mode", 'DOPESHEET')
-    if dope and ds != 'DOPESHEET':
+    ds = _ds_mode(context)
+    if dope and ds == 'MASK':
         drawing.rect(0, cy1, w, rl[3], COL_ROW_B)
         drawing.text(w / 2, (cy1 + rl[3]) / 2 - 7,
                      f"{DS_MODE_LABEL.get(ds, ds)}: coming soon", size=15,
@@ -1378,7 +1595,7 @@ def press(context, w, mx, my):
                 return True
         if any(_in(r, mx, my) for r in G["rows"]):
             return True
-        if _sp("nomad_ds_mode", 'DOPESHEET') != 'DOPESHEET':
+        if _ds_mode(context) == 'MASK':
             return True
     if _in(G["ruler"], mx, my):
         sc.frame_set(int(round(_xf(mx))))

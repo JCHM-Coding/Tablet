@@ -164,6 +164,13 @@ class NOMAD_OT_modal(bpy.types.Operator):
             # an undo step brought back an old value of the flag
             context.scene.nomad_ui_active = True
 
+        from . import edit_ops
+        if (edit_ops.armed is not None and event.value == 'PRESS'
+                and event.type in {'ESC', 'RIGHTMOUSE'}):
+            edit_ops.disarm()                 # cancel the armed operator
+            tag_all_view3d_redraw(context)
+            return {'RUNNING_MODAL'}
+
         if (event.type == 'ESC' and event.value == 'PRESS'
                 and not editors.active()):
             restore_ui(context)
@@ -222,6 +229,8 @@ class NOMAD_OT_modal(bpy.types.Operator):
                         consumed = (res is not False)  # True o 'drag'
                     tag_all_view3d_redraw(context)
                     if consumed:
+                        return {'RUNNING_MODAL'}
+                    if edit_ops.launch(context, area, region):  # armed: drag starts
                         return {'RUNNING_MODAL'}
                     return {'PASS_THROUGH'}
                 elif event.value == 'RELEASE':

@@ -121,6 +121,31 @@ def hide_native(context):
     _hide_shelf(context)
 
 
+def show_headers(context):
+    """The File Browser that Blender opens for File > Open / Import (in a
+    temporary window) and the Outliner in its Blender File view must always
+    show their header, whatever hid it."""
+    if safety.no_window():
+        return
+    try:
+        for win in context.window_manager.windows:
+            for area in win.screen.areas:
+                if area.type == 'FILE_BROWSER':
+                    pass
+                elif area.type == 'OUTLINER':
+                    if getattr(area.spaces.active, "display_mode",
+                               None) != 'LIBRARIES':
+                        continue
+                else:
+                    continue
+                sp = area.spaces.active
+                if sp is not None and not sp.show_region_header:
+                    sp.show_region_header = True
+                    area.tag_redraw()
+    except (AttributeError, RuntimeError, ReferenceError):
+        pass
+
+
 def enforce(context):
     """Called every 0.1 s: switching mode can bring back the HUD or the
     mode's own asset shelf, so close them again."""
@@ -129,6 +154,7 @@ def enforce(context):
     for sp in _spaces(context):
         _hud_off(sp)
     _hide_shelf(context)
+    show_headers(context)
 
 
 def restore_native(context):

@@ -5,11 +5,12 @@ from .sculpt_popups import open_panel_deferred, defer_op
 
 # --- Estilo -------------------------------------------------------------
 BTN = 40            # antes 36 — ancho común de botones y sliders
-PAD = 4
-MARGIN = 4
+PAD = 3            # between buttons of a capsule (was 8)
+MARGIN = 8
 TOP_GAP = 14
 SLIDER_H = 110
-SLIDER_GAP = 16
+SLIDER_GAP = 6      # between the two sliders (was 16)
+SIDE_GAP = 5        # sliders -> first button below them (was 14)
 LBL_H = 20          # franja del número dentro del recuadro
 BOT_H = 46
 
@@ -18,6 +19,12 @@ FILL_COL = (0.22, 0.48, 0.85, 1.0)
 COL_BAR = (0.06, 0.06, 0.07, 0.96)
 COL_BTN = (0.16, 0.16, 0.18, 1.0)
 COL_HOVER = (0.22, 0.48, 0.85, 1.0)
+# Buttons of the side bars and of the navigation gizmo, like those of the top
+# bar: at rest NOTHING is painted, the capsule behind them is the only
+# background (painting its color again on top made the buttons darker and
+# less see-through than the capsule). Only hover / active paints, with a
+# see-through blue. Drawn with drawing.rrect so that nothing else is affected.
+COL_SIDE_ON = (0.22, 0.48, 0.85, 0.45)
 COL_GLYPH = (1, 1, 1, 1)
 COL_TIP = (0.85, 0.87, 0.9, 1.0)
 
@@ -210,7 +217,7 @@ def side_buttons(w, h):
     (_sx1, _sy1, _sx2, _sy2), (_tx1, ty1, _tx2, _ty2) = sliders(w, h)
     x1 = MARGIN + 4
     x2 = x1 + BTN
-    y = ty1 - TOP_GAP
+    y = ty1 - SIDE_GAP
     out = []
     for g, tip, cb in SIDE:
         out.append((x1, y - BTN, x2, y, tip, cb, g))
@@ -267,7 +274,7 @@ SIDE = [
     ("⊘", "Mask", _mask),
     ("▦", "Face Sets", _facesets),
     ("▨", "Textures", _texture),
-    ("✳", "Simetría", _symmetry),
+    ("✳", "Symmetry", _symmetry),
     ("❖", "Dyntopo / Remesh", _dyntopo_remesh),
 ]
 
@@ -615,7 +622,7 @@ def _side_for(mode, w, h):
     x1 = MARGIN + 4
     x2 = x1 + BTN
     rects = sliders(w, h, n) if n else []
-    y = (rects[-1][1] - TOP_GAP) if rects else (h - BAR_H - TOP_GAP)
+    y = (rects[-1][1] - SIDE_GAP) if rects else (h - BAR_H - TOP_GAP)
     out = []
     for g, tip, cb in _left_items(mode):
         vis = getattr(cb, "visible", None)
@@ -725,8 +732,9 @@ def draw_side(context, w, h, mx, my):
                 m.idname == active for m in ts._members(context, key))
         inside = x1 <= mx <= x2 and y1 <= my <= y2
         hot = inside and enabled
-        drawing.rect(x1 + 2, y1 + 2, x2 - 2, y2 - 2,
-                     COL_HOVER if hot else FILL_COL if on else COL_BTN)
+        if hot or on:
+            drawing.rrect(x1 + 2, y1 + 2, x2 - 2, y2 - 2, drawing.BEVEL,
+                          COL_SIDE_ON)
         drawing.text(x1 + BTN / 2, (y1 + y2) / 2 - 9, glyph,
                      size=18, color=COL_GLYPH if enabled else COL_TIP,
                      align='CENTER')

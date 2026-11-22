@@ -11,7 +11,7 @@ def _node_input(layout, mat, name):
         if hasattr(mat, "use_nodes"):
             layout.prop(mat, "use_nodes", text="Usar nodos", toggle=True)
         else:
-            layout.label(text="Sin nodos", icon='INFO')
+            layout.label(text="No nodes", icon='INFO')
         return
     node = None
     for target in ('EEVEE', 'ALL'):
@@ -23,7 +23,7 @@ def _node_input(layout, mat, name):
             break
     inp = node.inputs.get(name) if node is not None else None
     if inp is None:
-        layout.label(text=f"Sin entrada «{name}»", icon='INFO')
+        layout.label(text=f"No '{name}' input", icon='INFO')
         return
     try:
         layout.template_node_view(nt, node, inp)

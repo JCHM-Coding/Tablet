@@ -8,6 +8,7 @@ bl_info = {
     "category": "Interface",
 }
 
+import time
 import traceback
 
 import bpy
@@ -22,7 +23,7 @@ from . import (safety, top_bar, modal, panels, modifiers_panel,
                curve_panels, data_panels, sequencer_panels, viewport_ui,
                outliner_gpu, fav_bar, asset_gpu, assets_panels, editors, anim_options,
                style, fav_bar, nav_gizmo, timeline_ext, graph_ext, nla_ext, driver_ext,
-               requirements, pose_assets, requirements, pose_assets, graph_panels,
+               requirements, pose_assets, requirements, pose_assets, graph_panels, ds_panels, dope_gp, edit_ops,
                graph_ext)
 
 MODULES = (modifiers_panel, outliner_panel, sculpt_popups, material_panel,
@@ -31,7 +32,8 @@ MODULES = (modifiers_panel, outliner_panel, sculpt_popups, material_panel,
            gp_panels, texture_panels, paint_panels, curve_panels,
            data_panels, sequencer_panels, viewport_ui, outliner_gpu,
            asset_gpu, pose_assets, assets_panels, editors, timeline_ext,
-           anim_options, fav_bar, nla_ext, driver_ext, graph_panels)
+           anim_options, fav_bar, nla_ext, driver_ext, graph_panels,
+           ds_panels, dope_gp, edit_ops)
 
 MODULES = tuple(dict.fromkeys(MODULES))
 # ----------------------------------------------------------------------
@@ -141,9 +143,6 @@ class NomadPreferences(bpy.types.AddonPreferences):
         name="Brush browser cell size", default=5.0, min=3.0, max=10.0,
         description="Size of the thumbnails of the brush browser and the "
                     "favorites popup")
-    custom_scale: bpy.props.FloatProperty(
-        name="Android / Tablet UI Scale", default=1.0, min=0.5, max=2.0,
-        description="Additional scale factor for elements drawn on screen")
 
     def draw(self, context):
         from . import requirements
@@ -180,9 +179,6 @@ class NomadPreferences(bpy.types.AddonPreferences):
                 row.label(text="(not installed)")
         box.label(text="Without them, the related features are disabled "
                        "or hidden.")
-        box = l.box()
-        box.label(text="Scaling and Display")
-        box.prop(self, "custom_scale")
 
 
 CLASSES = (NomadPreferences, NOMAD_OT_stub, NOMAD_OT_toggle_overlays,
@@ -237,7 +233,7 @@ def _when_ready(fn, first=3.0, tries=30):
         return 0.5 if count[0] < tries else None
     _timers.append(_run)
     try:
-        bpy.app.timers.register(_run, first_interval=first)
+        bpy.app.timers.register(_run, first_interval=first, persistent=True)
     except (RuntimeError, ValueError):
         pass
 
@@ -262,6 +258,55 @@ def _start_modal():
         print(f"NomadUI autostart: {exc!r}")
 
 
+# The tablet mode does not start until the first click has been released
+# (that click closes Blender's splash screen). Nothing else is considered.
+_CLICKS = {'LEFTMOUSE', 'RIGHTMOUSE', 'MIDDLEMOUSE'}
+_gate = {"click": False}         # True from register() until that click
+
+
+def _start_after_wait():
+    if not modal.running and _autostart_wanted():
+        _start_modal()
+    return None
+
+
+class NOMAD_OT_wait_splash(bpy.types.Operator):
+    """Passes every event through until the first click is released, then
+    starts the tablet mode."""
+    bl_idname = "nomad.wait_splash"
+    bl_label = "Wait for the First Click"
+    bl_options = {'INTERNAL'}
+
+    def invoke(self, context, event):
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if safety.exiting() or not _gate["click"]:
+            return {'CANCELLED', 'PASS_THROUGH'}
+        if event.type not in _CLICKS or event.value != 'RELEASE':
+            return {'PASS_THROUGH'}
+        _gate["click"] = False
+        try:
+            bpy.app.timers.register(_start_after_wait, first_interval=0.3)
+        except (RuntimeError, ValueError):
+            pass
+        return {'FINISHED', 'PASS_THROUGH'}
+
+
+def _wait_for_click():
+    try:
+        win, area, region = sculpt_popups._view3d_override()
+        if area is None:
+            raise RuntimeError("no 3D View")
+        with bpy.context.temp_override(window=win, area=area, region=region):
+            bpy.ops.nomad.wait_splash('INVOKE_DEFAULT')
+    except Exception as exc:
+        print(f"NomadUI first-click wait: {exc!r}")
+        _gate["click"] = False
+        _start_modal()
+
+
 def _post_load():
     """After startup or a file load, once the UI exists."""
     _post_pending[0] = False
@@ -281,7 +326,10 @@ def _post_load():
     except Exception as exc:
         print(f"NomadUI purge: {exc!r}")
     if _autostart_wanted():
-        _start_modal()
+        if _gate["click"]:
+            _wait_for_click()            # not before the first click
+        else:
+            _start_modal()
     elif was_active or modal.any_fullscreen():
         modal.exit_fullscreen_deferred()
 
@@ -293,10 +341,29 @@ def _schedule_post_load(first=3.0):
     _when_ready(_post_load, first=first)
 
 
+def _cancel_timers():
+    for fn in _timers:
+        try:
+            bpy.app.timers.unregister(fn)
+        except (ValueError, RuntimeError):
+            pass
+    _timers.clear()
+
+
 @persistent
 def _on_load(*_args):
     modal.running = False
     modal._want_exit = False
+    if _gate["click"]:
+        # still waiting for the first click: only make sure that a waiter
+        # will exist (a file load removes the one that was running)
+        _schedule_post_load(first=1.5)
+        return
+    # Loading a file (e.g. choosing 2D Animation / Sculpting / Storyboarding
+    # on the splash screen) deletes the timers that were pending, but the
+    # flag stayed True and blocked every later schedule: reset both.
+    _cancel_timers()
+    _post_pending[0] = False
     _schedule_post_load(first=1.5)
 
 
@@ -380,6 +447,7 @@ def _draw_all():
                    lambda: fav_bar.draw(ctx, w, h, mx, my),
                    lambda: asset_gpu.draw(ctx, w, h, mx, my),
                    lambda: outliner_gpu.draw(ctx, w, h, mx, my),
+                   lambda: edit_ops.draw(ctx, w, h),
                    lambda: viewport_ui.draw_tooltip(ctx, w, h, mx, my)):
             _guard(fn)
     finally:
@@ -401,7 +469,7 @@ def register():
         name="Navigate Gizmo", default=True)
     bpy.types.Scene.nomad_fav_bar = bpy.props.BoolProperty(
         name="Favorites Bar", default=False)
-    for cls in CLASSES:
+    for cls in CLASSES + (NOMAD_OT_wait_splash,):
         bpy.utils.register_class(cls)
 
     for mod in MODULES:
@@ -422,7 +490,8 @@ def register():
     bpy.app.handlers.load_factory_startup_post.append(_on_load)
     bpy.app.handlers.save_pre.append(_on_save_pre)
     bpy.app.handlers.save_post.append(_on_save_post)
-    _schedule_post_load(first=3.0)       # startup file: no load_post call
+    _gate["click"] = True
+    _schedule_post_load(first=3.0)
     try:
         style.install()
     except Exception:
@@ -435,12 +504,7 @@ def unregister():
     if safety.quitting():
         return          # Blender is closing: touch nothing at all
 
-    for fn in _timers:
-        try:
-            bpy.app.timers.unregister(fn)
-        except (ValueError, RuntimeError):
-            pass
-    _timers.clear()
+    _cancel_timers()
 
     for lst, fn in ((bpy.app.handlers.load_post, _on_load),
                     (bpy.app.handlers.load_factory_startup_post, _on_load),
@@ -481,7 +545,7 @@ def unregister():
         except Exception:
             traceback.print_exc()
 
-    for cls in reversed(CLASSES):
+    for cls in reversed(CLASSES + (NOMAD_OT_wait_splash,)):
         try:
             bpy.utils.unregister_class(cls)
         except RuntimeError:

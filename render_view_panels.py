@@ -403,6 +403,10 @@ class NOMAD_PT_view(bpy.types.Panel):
                      toggle=True, icon='COLOR')
         row.prop(sc, "nomad_nav_gizmo", text="Navigate Gizmo",
                  toggle=True, icon='ORIENTATION_VIEW')
+        if mode in self.PICKER_MODES and sc.nomad_color_overlay:
+            col = l.column(align=True)
+            col.prop(sc, "nomad_picker_corner", text="Picker Position")
+            col.prop(sc, "nomad_picker_palette", text="Palette")
         row = l.row()
         row.scale_y = 1.5
         row.prop(sc, "nomad_sidebar_left", text="Tool Sidebar on Left",
