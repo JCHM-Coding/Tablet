@@ -62,6 +62,75 @@ def rrect(x1, y1, x2, y2, r, color, seg=5):
     batch.draw(shader)
 
 
+_ink = {}               # (glyph, size) -> (dx, dy) from the blf origin to the INK centre
+
+
+def _ink_centre(pix, w, h, ox, oy):
+    """Centre of the drawn pixels relative to the point (ox, oy) where the
+    glyph was drawn. `pix` is RGBA, row after row from the bottom."""
+    minx, maxx, miny, maxy = w, -1, h, -1
+    for y in range(h):
+        row = y * w * 4
+        for x in range(w):
+            i = row + x * 4
+            if pix[i + 3] > 16 or pix[i] > 16:
+                if x < minx:
+                    minx = x
+                if x > maxx:
+                    maxx = x
+                if y < miny:
+                    miny = y
+                if y > maxy:
+                    maxy = y
+    if maxx < 0:
+        return None
+    return (minx + maxx + 1) / 2.0 - ox, (miny + maxy + 1) / 2.0 - oy
+
+
+def _ink_offset(s, size):
+    """Offset from the point blf draws a glyph at to the middle of what is
+    visible, measured once by drawing it in a small offscreen buffer. The
+    font metrics (blf.dimensions) do not say where the symbol really is, so
+    centring with them left many icons high or low in their buttons."""
+    key = (s, round(size, 1))
+    if key in _ink:
+        return _ink[key]
+    res = None
+    try:
+        from mathutils import Matrix
+        w = h = max(48, int(size * 3))
+        ox, oy = w // 3, h // 3
+        off = gpu.types.GPUOffScreen(w, h)
+        try:
+            with off.bind():
+                fb = gpu.state.active_framebuffer_get()
+                fb.clear(color=(0.0, 0.0, 0.0, 0.0))
+                gpu.matrix.push()
+                gpu.matrix.push_projection()
+                try:
+                    gpu.matrix.load_identity()
+                    gpu.matrix.load_projection_matrix(Matrix((
+                        (2.0 / w, 0, 0, -1), (0, 2.0 / h, 0, -1),
+                        (0, 0, -1, 0), (0, 0, 0, 1))))
+                    blf.size(0, size)
+                    blf.color(0, 1.0, 1.0, 1.0, 1.0)
+                    blf.position(0, ox, oy, 0)
+                    blf.draw(0, s)
+                finally:
+                    gpu.matrix.pop_projection()
+                    gpu.matrix.pop()
+                buf = fb.read_color(0, 0, w, h, 4, 0, 'UBYTE')
+            buf.dimensions = w * h * 4
+            res = _ink_centre(buf, w, h, ox, oy)
+        finally:
+            off.free()
+    except Exception as exc:            # keep the old centring
+        print(f"NomadUI glyph centring {s!r}: {exc!r}")
+        res = None
+    _ink[key] = res
+    return res
+
+
 DEBUG_GLYPHS = False      # True: prints each glyph (mode) without an icon
 _seen = set()
 
@@ -97,6 +166,13 @@ def glyph(cx, cy, s, size=18, color=(1, 1, 1, 1)):
     fid = 0
     blf.size(fid, size)
     blf.color(fid, *color)
+    ink = _ink_offset(s, size)
+    if ink is not None:                         # exact: middle of the ink
+        blf.size(fid, size)                     # (the offscreen pass used it)
+        blf.color(fid, *color)
+        blf.position(fid, round(cx - ink[0]), round(cy - ink[1]), 0)
+        blf.draw(fid, s)
+        return
     w, h = blf.dimensions(fid, s)
     dy = GLYPH_DY.get(s, 0.0) * size / 18.0     # table values are for 18 px
     blf.position(fid, round(cx - w / 2),

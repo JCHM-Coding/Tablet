@@ -1,5 +1,5 @@
 # Real Blender editors in place of our 3D viewport (Image, UV, Shader,
-# Geometry Nodes, Compositor, Video Sequencer). The editor-type selector of
+# Geometry Nodes, Compositor, Video Sequencer, Movie Clip). The editor-type selector of
 # their header is covered by a "back to 3D" button.
 import bpy
 
@@ -19,6 +19,10 @@ EDITORS = (
     ("COMPOSITOR", "Compositor", 'NODE_COMPOSITING',
      {"type": 'NODE_EDITOR', "tree_type": 'CompositorNodeTree'}),
     ("VIDEO", "Video Sequencer", 'SEQUENCE', {"type": 'SEQUENCE_EDITOR'}),
+    ("CLIP", "Movie Clip Editor", 'TRACKING',
+     {"type": 'CLIP_EDITOR', "mode": 'TRACKING'}),
+    ("MASK", "Mask Editor", 'MOD_MASK',
+     {"type": 'CLIP_EDITOR', "mode": 'MASK'}),
 )
 
 _ptr = [None]         # pointer of the area we switched (when not fullscreen)
@@ -64,7 +68,7 @@ def active():
 def _apply(area, spec):
     area.type = spec["type"]
     sp = area.spaces.active
-    for key in ("ui_mode", "tree_type"):
+    for key in ("ui_mode", "tree_type", "mode"):
         if key in spec:
             try:
                 setattr(sp, key, spec[key])
@@ -277,7 +281,7 @@ def register():
     except (AttributeError, RuntimeError):
         pass
     for name in ("SpaceImageEditor", "SpaceNodeEditor",
-                 "SpaceSequenceEditor"):
+                 "SpaceSequenceEditor", "SpaceClipEditor"):
         space = getattr(bpy.types, name, None)
         if space is None:
             continue
