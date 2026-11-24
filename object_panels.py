@@ -224,6 +224,21 @@ class NOMAD_PT_options(bpy.types.Panel):
         _p(l, ts, "proportional_edit_falloff", text="Falloff")
         _p(l, ts, "proportional_size", text="Size")
 
+        body = _section(l, "nomad_opt_tools", "Cursor, Move & Rotate",
+                        closed=False)
+        if body is not None:
+            from . import edit_ops
+            edit_ops.tool_buttons(body)
+
+        if mode in {'OBJECT', 'POSE'}:          # the Ctrl + A menu
+            menu = ("VIEW3D_MT_object_apply" if mode == 'OBJECT'
+                    else "VIEW3D_MT_pose_apply")
+            if hasattr(bpy.types, menu):
+                body = _section(l, "nomad_opt_apply", "Apply (Ctrl + A)",
+                                closed=True)
+                if body is not None:
+                    body.menu_contents(menu)
+
         if mode == 'POSE':
             self._pose_options(l, context, ts)
 

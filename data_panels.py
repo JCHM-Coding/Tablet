@@ -432,6 +432,11 @@ class NOMAD_PT_options_c(bpy.types.Panel):
                      icon='SNAP_ON' if ts.use_snap else 'SNAP_OFF')
             _popover(row, "VIEW3D_PT_snapping", "", 'DOWNARROW_HLT')
 
+        body = _sec(l, "o_tools", "Cursor, Move & Rotate")
+        if body is not None:
+            from . import edit_ops
+            edit_ops.tool_buttons(body)
+
         body = _sec(l, "o_fall", "Falloff")
         if body is not None:
             attr = ("use_proportional_edit_objects"

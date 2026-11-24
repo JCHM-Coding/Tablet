@@ -193,7 +193,8 @@ class NOMAD_OT_arm_op(bpy.types.Operator):
         if item is None:
             return {'CANCELLED'}
         global armed
-        armed = {"idname": item[0], "kwargs": item[1], "label": item[2]}
+        armed = {"idname": item[0], "kwargs": item[1], "label": item[2],
+                 "alts": None, "mode": context.mode}
         print(f"NomadUI operators: {item[0]} armed (press in the viewport)")
         for area in context.screen.areas:
             area.tag_redraw()
@@ -303,21 +304,27 @@ def launch(context, area=None, region=None):
     if area is None or region is None:
         from .sculpt_popups import _view3d_override
         win, area, region = _view3d_override()
-    idname, kwargs = armed["idname"], armed["kwargs"]
+    idname = armed["idname"]
+    candidates = armed.get("alts") or [armed["kwargs"]]
     armed = None
     mod, name = idname.split(".", 1)
-    kw = _with_release_confirm(idname, kwargs)
-    print(f"NomadUI operators: launching {idname} {kw}")
     before = _modal_ptrs()
     _confirm_on_release(True)
-    try:
-        with context.temp_override(window=win, area=area, region=region):
-            getattr(getattr(bpy.ops, mod), name)('INVOKE_DEFAULT', **kw)
-    except (RuntimeError, TypeError, ValueError) as exc:
-        print(f"NomadUI operators: {idname} could not start: {exc}")
-        _confirm_on_release(False)
+    for kwargs in candidates:             # the first one this Blender accepts
+        kw = _with_release_confirm(idname, kwargs)
+        print(f"NomadUI operators: launching {idname} {kw}")
+        try:
+            with context.temp_override(window=win, area=area, region=region):
+                getattr(getattr(bpy.ops, mod), name)('INVOKE_DEFAULT', **kw)
+        except TypeError as exc:           # unknown argument / enum value
+            print(f"NomadUI operators: {idname}: {exc}")
+            continue
+        except (RuntimeError, ValueError) as exc:
+            print(f"NomadUI operators: {idname} could not start: {exc}")
+            break
+        _restore_when_done(before)
         return True
-    _restore_when_done(before)
+    _confirm_on_release(False)
     return True
 
 
@@ -326,8 +333,8 @@ def draw(context, w, h):
     global armed
     if armed is None:
         return
-    if not context.mode.startswith('EDIT'):
-        armed = None
+    if context.mode != armed.get("mode", context.mode):
+        armed = None                      # another mode: no longer valid
         return
     from .top_bar import BAR_H
     text = f"{armed['label']}: press and drag, release to confirm  (Esc cancels)"
@@ -401,7 +408,87 @@ class NOMAD_MT_edit_operators(bpy.types.Menu):
                 layout.label(text=f"{name} not found", icon='INFO')
 
 
-CLASSES = (NOMAD_OT_arm_op, NOMAD_MT_edit_operators)
+# ----------------------------------------------------------------------
+# Cursor / move / rotate tools of the Options popup. Same gesture: pick it,
+# press in the viewport (the drag starts there), release to confirm.
+# ----------------------------------------------------------------------
+
+_SURF = [{"snap": True, "snap_elements": {'FACE_PROJECT'}},
+         {"snap": True, "snap_elements": {'FACE'}, "use_snap_project": True},
+         {"snap": True}]
+_SURF_N = [dict(k, snap_align=True) for k in _SURF]
+
+
+def _axis(i):
+    c = [False, False, False]
+    c[i] = True
+    return [{"constraint_axis": tuple(c), "orient_type": 'GLOBAL'},
+            {"constraint_axis": tuple(c)}]
+
+
+TOOLS = {   # key: (operator, [argument sets to try in order], label)
+    "cursor": ("view3d.cursor3d", [{"use_depth": True}, {}], "Place Cursor"),
+    "move": ("transform.translate", [{}], "Move"),
+    "move_x": ("transform.translate", _axis(0), "Move X"),
+    "move_y": ("transform.translate", _axis(1), "Move Y"),
+    "move_z": ("transform.translate", _axis(2), "Move Z"),
+    "surface": ("transform.translate", _SURF, "Move on Surface"),
+    "surface_n": ("transform.translate", _SURF_N,
+                  "Move on Surface + Normals"),
+    "rotate": ("transform.rotate", [{}], "Rotate"),
+}
+_TOOL_LAYOUT = (("Place Cursor", "cursor"), ("Rotate", "rotate"),
+                ("Move", "move"), ("Move on Surface", "surface"),
+                ("Move X", "move_x"), ("Move Y", "move_y"),
+                ("Move Z", "move_z"), ("Surface + Normals", "surface_n"))
+
+
+def _dismiss_popup(context):
+    """The Options popup stays open after a button and would swallow the
+    next press. Moving the pointer away from it closes it."""
+    win = context.window
+    if win is None:
+        return
+    try:
+        win.cursor_warp(win.width // 2, win.height // 2)
+    except (AttributeError, RuntimeError, TypeError):
+        pass
+
+
+class NOMAD_OT_arm_tool(bpy.types.Operator):
+    bl_idname = "nomad.arm_tool"
+    bl_label = "Transform Tool"
+    bl_description = ("Pick it, then press in the viewport and drag "
+                      "(release to confirm)")
+    bl_options = {'INTERNAL'}
+
+    tool: bpy.props.StringProperty()
+
+    def execute(self, context):
+        global armed
+        item = TOOLS.get(self.tool)
+        if item is None:
+            return {'CANCELLED'}
+        idname, alts, label = item
+        armed = {"idname": idname, "kwargs": alts[0], "alts": alts,
+                 "label": label, "mode": context.mode}
+        print(f"NomadUI operators: {idname} armed as '{label}'")
+        _dismiss_popup(context)
+        for area in context.screen.areas:
+            area.tag_redraw()
+        return {'FINISHED'}
+
+
+def tool_buttons(layout):
+    """Buttons of the Options popup (Object, Edit and Pose modes)."""
+    g = layout.grid_flow(row_major=True, columns=2, even_columns=True,
+                         align=True)
+    g.scale_y = 1.3
+    for text, key in _TOOL_LAYOUT:
+        g.operator("nomad.arm_tool", text=text).tool = key
+
+
+CLASSES = (NOMAD_OT_arm_op, NOMAD_OT_arm_tool, NOMAD_MT_edit_operators)
 
 
 def register():

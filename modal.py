@@ -164,6 +164,20 @@ class NOMAD_OT_modal(bpy.types.Operator):
             # an undo step brought back an old value of the flag
             context.scene.nomad_ui_active = True
 
+        # Blender's own toolbar (T) and sidebar (N) shortcuts are off while
+        # the tablet mode is running (our modal handler sees the keys before
+        # the keymaps, so swallowing them is enough, and nothing has to be
+        # restored: it simply stops when the mode ends). Caps lock does not
+        # change the key; with Shift, Ctrl or Alt (AltGr = Ctrl+Alt) the
+        # shortcuts are other ones and they are left alone.
+        if (event.type in {'T', 'N'}
+                and not (event.shift or event.ctrl or event.alt
+                         or event.oskey)
+                and not editors.active()):
+            over, _r = area_under_mouse(context, event.mouse_x, event.mouse_y)
+            if over is not None:
+                return {'RUNNING_MODAL'}
+
         from . import edit_ops
         if (edit_ops.armed is not None and event.value == 'PRESS'
                 and event.type in {'ESC', 'RIGHTMOUSE'}):

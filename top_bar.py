@@ -234,7 +234,11 @@ def _add_menu(op, area):
 
 def _object_menu(op, area):
     from .sculpt_popups import open_menu_deferred
-    open_menu_deferred("VIEW3D_MT_object")
+    # the copy of the Object menu whose drag operators (Move, Rotate, Scale...)
+    # use the same gesture as in edit mode (see edit_ops.py)
+    proxy = "NOMAD_MT_p_VIEW3D_MT_object"
+    open_menu_deferred(proxy if hasattr(bpy.types, proxy)
+                       else "VIEW3D_MT_object")
 
 
 def _options(op, area):
