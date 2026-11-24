@@ -15,7 +15,7 @@ import bpy
 import gpu
 from bpy.app.handlers import persistent
 
-from . import (safety, top_bar, modal, panels, modifiers_panel,
+from . import (safety, drawing, top_bar, modal, panels, modifiers_panel,
                outliner_panel, sculpt_popups, material_panel,
                render_view_panels, color_overlay, brush_shelf, tool_sidebar,
                expand, sculpt_panels, object_panels, mesh_panels,
@@ -134,6 +134,13 @@ class NomadPreferences(bpy.types.AddonPreferences):
     tl_h_drivers: bpy.props.FloatProperty(
         name="Drivers", default=4.0, min=2.0, max=12.0,
         description="Height, as a multiple of the compact timeline")
+    ui_scale_override: bpy.props.FloatProperty(
+        name="Interface scale", default=0.0, min=0.0, max=8.0,
+        description="Scale of the tablet interface. 0 = automatic: it "
+                    "follows the DPI of the screen and Blender's "
+                    "Resolution Scale, like Blender's own windows. Type a "
+                    "value (for example 2.0) if the buttons look too small "
+                    "or too large next to the native windows")
     asset_tile: bpy.props.IntProperty(
         name="Asset browser cell size", default=62, min=40, max=160,
         subtype='PIXEL',
@@ -148,6 +155,14 @@ class NomadPreferences(bpy.types.AddonPreferences):
         from . import requirements
         l = self.layout
         l.prop(self, "autostart")
+
+        box = l.box()
+        box.label(text="Interface scale (0 = automatic)")
+        box.prop(self, "ui_scale_override")
+        box.label(text=f"In use: x{style.ui_scale():.2f}   "
+                       f"(Blender: x{context.preferences.system.ui_scale:.2f})"
+                  if hasattr(context.preferences.system, "ui_scale")
+                  else f"In use: x{style.ui_scale():.2f}")
 
         box = l.box()
         box.label(text="Timeline editors height (x the compact timeline)")
@@ -415,6 +430,7 @@ def _draw_all():
         return
 
     s = style.ui_scale()
+    drawing.SCALE = s                    # crisp text at any DPI (drawing.py)
     ox = oy = 0.0
     if len(regs) > 1:
         ux, uy, uw, uh = style.union(regs)
@@ -452,6 +468,7 @@ def _draw_all():
             _guard(fn)
     finally:
         gpu.matrix.pop()
+        drawing.SCALE = 1.0              # other draw handlers do not scale
     gpu.state.blend_set('NONE')
 
 

@@ -62,6 +62,23 @@ def rrect(x1, y1, x2, y2, r, color, seg=5):
     batch.draw(shader)
 
 
+SCALE = 1.0               # UI scale of the frame being drawn (set by __init__)
+
+
+def _draw_dev(fid, text, dx, dy):
+    """Draw text at DEVICE pixels (dx, dy), undoing the UI scale matrix: the
+    font is rasterised at its real size instead of being stretched (blurry
+    on screens with a high DPI)."""
+    k = SCALE
+    if k != 1.0:
+        gpu.matrix.push()
+        gpu.matrix.scale((1.0 / k, 1.0 / k))
+    blf.position(fid, dx, dy, 0)
+    blf.draw(fid, text)
+    if k != 1.0:
+        gpu.matrix.pop()
+
+
 _ink = {}               # (glyph, size) -> (dx, dy) from the blf origin to the INK centre
 
 
@@ -164,20 +181,18 @@ def glyph(cx, cy, s, size=18, color=(1, 1, 1, 1)):
         except Exception:
             pass
     fid = 0
-    blf.size(fid, size)
+    k = SCALE
+    px = size * k                               # real size on the screen
+    blf.size(fid, px)
     blf.color(fid, *color)
-    ink = _ink_offset(s, size)
+    ink = _ink_offset(s, px)
     if ink is not None:                         # exact: middle of the ink
-        blf.size(fid, size)                     # (the offscreen pass used it)
-        blf.color(fid, *color)
-        blf.position(fid, round(cx - ink[0]), round(cy - ink[1]), 0)
-        blf.draw(fid, s)
+        _draw_dev(fid, s, round(cx * k - ink[0]), round(cy * k - ink[1]))
         return
     w, h = blf.dimensions(fid, s)
-    dy = GLYPH_DY.get(s, 0.0) * size / 18.0     # table values are for 18 px
-    blf.position(fid, round(cx - w / 2),
-                 round(cy - h / 2 + 0.06 * size + dy), 0)
-    blf.draw(fid, s)
+    dy = GLYPH_DY.get(s, 0.0) * px / 18.0       # table values are for 18 px
+    _draw_dev(fid, s, round(cx * k - w / 2),
+              round(cy * k - h / 2 + 0.06 * px + dy))
 
 
 def text(x, y, s, size=14, color=(1, 1, 1, 1), align='LEFT'):
@@ -187,15 +202,15 @@ def text(x, y, s, size=14, color=(1, 1, 1, 1), align='LEFT'):
         # legacy glyph buttons: the caller passes baseline = centre - size/2
         glyph(x, y + size / 2, s, size, color)
         return
-    blf.size(fid, size)
+    k = SCALE
+    blf.size(fid, size * k)
     blf.color(fid, *color)
-    w, _ = blf.dimensions(fid, s)
+    w = blf.dimensions(fid, s)[0] / k           # width in our units
     if align == 'CENTER':
         x -= w / 2
     elif align == 'RIGHT':
         x -= w
-    blf.position(fid, round(x), round(y), 0)
-    blf.draw(fid, s)
+    _draw_dev(fid, s, round(x * k), round(y * k))
 
 
 def begin_2d():

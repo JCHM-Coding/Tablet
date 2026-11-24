@@ -571,8 +571,8 @@ def layout(context, w, h, paint):
         x2 = x1 + pw
 
     # vertical: the side columns go down to the bottom of the screen
-    floor_fn = getattr(style, "_side_floor", style._stack_top)
-    y_lo = floor_fn(context) + fav_bar.bottom_offset(context)
+    # bottom margin: the Undo/Redo pill (not the favorites bar)
+    y_lo = getattr(style, "_undo_floor", style._stack_top)(context)
     y_hi = h - BAR_H - 10.0 - style.top_inset(context)
     if right and getattr(sc, "nomad_nav_gizmo", True):
         y_hi = min(y_hi, _nav_geometry(context, w, h)[3] - 10.0)

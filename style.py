@@ -3,6 +3,8 @@
 # Resolution Scale.
 import math
 import gpu
+import time
+
 import bpy
 from mathutils import Matrix
 from . import drawing
@@ -25,12 +27,42 @@ _bar = {"L": 0, "R": 0}      # scroll of each side column, in steps
 _info = {}                    # side -> geometry of an overflowing column
 
 
-def ui_scale():
-    """Preferences > Interface > Resolution Scale."""
+_scale_cache = {"t": 0.0, "v": 1.0}
+
+
+def _override():
+    """Interface scale typed in the add-on preferences (0 = automatic)."""
     try:
-        return max(0.5, float(bpy.context.preferences.view.ui_scale))
+        entry = bpy.context.preferences.addons.get(__package__)
+        return float(getattr(entry.preferences, "ui_scale_override", 0.0))
     except Exception:
-        return 1.0
+        return 0.0
+
+
+def ui_scale():
+    """The multiplier that Blender itself applies to its interface: the DPI
+    of the screen (very different on Android) times the Resolution Scale of
+    the preferences. Everything of ours is drawn in units of this scale, so
+    that our buttons grow with the native windows instead of staying tiny."""
+    now = time.monotonic()
+    if now - _scale_cache["t"] < 0.25:
+        return _scale_cache["v"]
+    value = 1.0
+    try:
+        manual = _override()
+        if manual > 0.0:
+            value = manual
+        else:
+            sysp = bpy.context.preferences.system
+            value = float(getattr(sysp, "ui_scale", 0.0))
+            if value <= 0.0:                  # builds without that property
+                value = (float(bpy.context.preferences.view.ui_scale)
+                         * float(sysp.dpi) / 72.0)
+        value = max(0.5, min(value, 8.0))
+    except Exception:
+        value = 1.0
+    _scale_cache["t"], _scale_cache["v"] = now, value
+    return value
 
 
 def _regions(area):
@@ -142,6 +174,16 @@ def _side_floor(context):
     from . import panels, top_bar
     th = top_bar.timeline_height(context)
     return ((th + 8) if th else panels.MARGIN) + EDGE
+
+
+def _undo_floor(context):
+    """Lowest point for what sits in the bottom corners (the color picker):
+    just above the Undo/Redo pill (and the timeline when it is shown). The
+    favorites bar is not taken into account: on a portrait screen it left
+    no room for the picker."""
+    from . import panels, top_bar
+    th = top_bar.timeline_height(context)
+    return ((th + 8) if th else panels.MARGIN) + panels.BOT_H + EDGE
 
 
 def _y_limits(context, h):

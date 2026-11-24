@@ -23,6 +23,10 @@ EDITORS = (
      {"type": 'CLIP_EDITOR', "mode": 'TRACKING'}),
     ("MASK", "Mask Editor", 'MOD_MASK',
      {"type": 'CLIP_EDITOR', "mode": 'MASK'}),
+    # Blender's own Dope Sheet in Mask mode: the shape keyframes of the masks
+    # are not exposed to Python, so they cannot be drawn by our own one
+    ("DOPE_MASK", "Mask Dope Sheet", 'ACTION',
+     {"type": 'DOPESHEET_EDITOR', "ui_mode": 'MASK'}),
 )
 
 _ptr = [None]         # pointer of the area we switched (when not fullscreen)
@@ -97,8 +101,8 @@ def switch_deferred(which):
 
     def _go():
         win, area = find_area()
-        if area is None or area.type != 'VIEW_3D':
-            return
+        if area is None:                  # from the 3D view or from another
+            return                        # editor (Mask Editor <-> Dope Sheet)
         _ptr[0] = area.as_pointer()
         with bpy.context.temp_override(window=win, screen=win.screen,
                                        area=area):
@@ -281,7 +285,8 @@ def register():
     except (AttributeError, RuntimeError):
         pass
     for name in ("SpaceImageEditor", "SpaceNodeEditor",
-                 "SpaceSequenceEditor", "SpaceClipEditor"):
+                 "SpaceSequenceEditor", "SpaceClipEditor",
+                 "SpaceDopeSheetEditor"):
         space = getattr(bpy.types, name, None)
         if space is None:
             continue
